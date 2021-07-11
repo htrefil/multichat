@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub enum ServerMessage {
     /// Response to [`ClientMessage::ListGroups`](crate::client::ClientMessage::ListGroups).
-    ListGroups { groups: HashMap<usize, String> },
+    ListGroups { groups: HashMap<String, usize> },
     /// A new client has joined a group.
     InitClient {
         gid: usize,

@@ -213,7 +213,7 @@ async fn handle_connection(
                         .enumerate()
                         .map(|(gid, group)| {
                             // We do a little troll... copying.
-                            (gid, group.name.clone())
+                            (group.name.clone(), gid)
                         })
                         .collect();
 
