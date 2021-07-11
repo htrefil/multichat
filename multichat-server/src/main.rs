@@ -101,10 +101,8 @@ async fn main() {
         None => handle_server(config.listen_addr, DefaultAcceptor, state).await,
     };
 
-    if let Err(err) = result {
-        log::error!("Server error: {}", err);
-        process::exit(1);
-    }
+    log::error!("Server error: {}", result.unwrap_err());
+    process::exit(1);
 }
 
 async fn handle_server(
