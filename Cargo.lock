@@ -259,6 +259,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "multichat-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "multichat-proto",
+ "tokio",
+ "tokio-native-tls",
+]
+
+[[package]]
 name = "multichat-proto"
 version = "0.1.0"
 dependencies = [

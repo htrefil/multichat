@@ -1,2 +1,2 @@
 [workspace]
-members = ["multichat-proto", "multichat-server"]
+members = ["multichat-proto", "multichat-server", "multichat-client"]
