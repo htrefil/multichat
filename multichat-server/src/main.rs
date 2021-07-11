@@ -162,7 +162,7 @@ async fn handle_connection(
     let mut stream_write = BufWriter::new(stream_write);
 
     // Send our version.
-    multichat_proto::write(&mut stream_write, &multichat_proto::VERSION).await?;
+    multichat_proto::VERSION.write(&mut stream_write).await?;
 
     // C2S.
     let (server_sender, mut server_receiver) = mpsc::unbounded_channel::<ClientMessage>();

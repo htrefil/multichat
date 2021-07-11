@@ -11,7 +11,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// Sets the max size of a wire frame to prevent DoS attacks by exhausting client's memory.
+    /// Sets the max size of a wire frame to prevent DoS attacks by exhausting available memory.
     ///
     /// Default value is 65535 bytes.
     pub fn max_size(&mut self, max_size: usize) -> &mut Self {
@@ -20,6 +20,9 @@ impl Config {
     }
 
     /// Read a message from a stream.
+    ///
+    /// It is highly recommended that the stream is internally buffered as this
+    /// function can make a lot of small read calls.
     pub async fn read<T: DeserializeOwned>(
         &self,
         mut stream: impl AsyncRead + Unpin,
@@ -51,6 +54,11 @@ impl Config {
     }
 
     /// Writes a message to a stream.
+    ///
+    /// Upon completion the stream is flushed, so there is no need to do it manually afterwards.
+    ///
+    /// It is highly recommended that the stream is internally buffered as this
+    /// function can make a lot of small write calls.
     pub async fn write(
         &self,
         mut stream: impl AsyncWrite + Unpin,
@@ -88,11 +96,15 @@ impl Default for Config {
 }
 
 /// Read a message from a stream with default [`Config`].
+///
+/// See [`Config::read`] for details.
 pub async fn read<T: DeserializeOwned>(stream: impl AsyncRead + Unpin) -> Result<T, Error> {
     Config::default().read(stream).await
 }
 
 /// Writes a message to a stream with default [`Config`].
+///
+/// See [`Config::write`] for details.
 pub async fn write(stream: impl AsyncWrite + Unpin, data: &impl Serialize) -> Result<(), Error> {
     Config::default().write(stream, data).await
 }
