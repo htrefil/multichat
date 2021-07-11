@@ -64,7 +64,7 @@ async fn main() {
             .into_iter()
             .map(|name| Group {
                 name,
-                clients: RwLock::new(Slab::new()),
+                users: RwLock::new(Slab::new()),
                 sender: broadcast::channel(update_buffer).0,
             })
             .collect(),
@@ -136,11 +136,11 @@ async fn handle_server(
                 Err(err) => log::error!("{}: Disconnected: {}", addr, err),
             }
 
-            // Remove all clients created by this connection which didn't leave on their own.
+            // Remove all users created by this connection which didn't leave on their own.
             for group in &state.groups {
-                group.clients.write().await.retain(|cid, client| {
+                group.users.write().await.retain(|uid, client| {
                     if client.owner != addr {
-                        let _ = group.sender.send(Update::Leave { cid });
+                        let _ = group.sender.send(Update::Leave { uid });
                         return false;
                     }
 
@@ -256,14 +256,14 @@ async fn handle_connection(
                         ));
                     }
 
-                    for (cid, client) in &*group.clients.read().await {
+                    for (uid, client) in &*group.users.read().await {
                         // XXX: Perhaps it would be wise to write the message
                         //      while the client list is not locked.
                         multichat_proto::write(
                             &mut stream_write,
-                            &ServerMessage::InitClient {
+                            &ServerMessage::InitUser {
                                 gid,
-                                cid,
+                                uid,
                                 name: client.name.clone(),
                             },
                         )
@@ -282,7 +282,7 @@ async fn handle_connection(
 
                     log::debug!("{}: Leave group - GID: {}", addr, gid);
                 }
-                ClientMessage::JoinClient { gid, name } => {
+                ClientMessage::JoinUser { gid, name } => {
                     let group = state.groups.get(gid).ok_or_else(|| {
                         Error::new(
                             ErrorKind::Other,
@@ -290,7 +290,7 @@ async fn handle_connection(
                         )
                     })?;
 
-                    let cid = group.clients.write().await.insert(Client {
+                    let uid = group.users.write().await.insert(Client {
                         name: name.clone(),
                         owner: addr,
                     });
@@ -298,13 +298,13 @@ async fn handle_connection(
                     // Notify our client.
                     multichat_proto::write(
                         &mut stream_write,
-                        &ServerMessage::ConfirmClient { cid },
+                        &ServerMessage::ConfirmClient { uid },
                     )
                     .await?;
 
                     // Notify our group.
                     let _ = group.sender.send(Update::Join {
-                        cid,
+                        uid,
                         name: name.clone(),
                     });
 
@@ -313,10 +313,10 @@ async fn handle_connection(
                         addr,
                         gid,
                         name,
-                        cid
+                        uid
                     );
                 }
-                ClientMessage::LeaveClient { gid, cid } => {
+                ClientMessage::LeaveUser { gid, uid } => {
                     let group = state.groups.get(gid).ok_or_else(|| {
                         Error::new(
                             ErrorKind::Other,
@@ -324,8 +324,8 @@ async fn handle_connection(
                         )
                     })?;
 
-                    let mut clients = group.clients.write().await;
-                    let client = clients.get(cid).ok_or_else(|| {
+                    let mut users = group.users.write().await;
+                    let client = users.get(uid).ok_or_else(|| {
                         Error::new(ErrorKind::Other, "Attempted to remove a nonexistent client")
                     })?;
 
@@ -336,14 +336,14 @@ async fn handle_connection(
                         ));
                     }
 
-                    clients.remove(cid);
+                    users.remove(uid);
 
                     // Notify our group.
-                    let _ = group.sender.send(Update::Leave { cid });
+                    let _ = group.sender.send(Update::Leave { uid });
 
-                    log::debug!("{}: Remove client - GID: {}, CID: {}", addr, gid, cid);
+                    log::debug!("{}: Remove client - GID: {}, CID: {}", addr, gid, uid);
                 }
-                ClientMessage::SendMessage { gid, cid, message } => {
+                ClientMessage::SendMessage { gid, uid, message } => {
                     let group = state.groups.get(gid).ok_or_else(|| {
                         Error::new(
                             ErrorKind::Other,
@@ -351,8 +351,8 @@ async fn handle_connection(
                         )
                     })?;
 
-                    let clients = group.clients.read().await;
-                    let client = clients.get(cid).ok_or_else(|| {
+                    let users = group.users.read().await;
+                    let client = users.get(uid).ok_or_else(|| {
                         Error::new(
                             ErrorKind::Other,
                             "Attempted to send a message as a nonexistent client",
@@ -368,7 +368,7 @@ async fn handle_connection(
 
                     // Notify our group.
                     let _ = group.sender.send(Update::Message {
-                        cid,
+                        uid,
                         message: message.clone(),
                     });
 
@@ -376,17 +376,17 @@ async fn handle_connection(
                         "{}: Send message - GID: {}, CID: {}, message: {:?}",
                         addr,
                         gid,
-                        cid,
+                        uid,
                         message
                     );
                 }
             },
             LocalUpdate::Group((gid, update)) => {
                 let message = match update {
-                    Update::Join { cid, name } => ServerMessage::InitClient { gid, cid, name },
-                    Update::Leave { cid } => ServerMessage::LeaveClient { gid, cid },
-                    Update::Message { cid, message } => {
-                        ServerMessage::Message { gid, cid, message }
+                    Update::Join { uid, name } => ServerMessage::InitUser { gid, uid, name },
+                    Update::Leave { uid } => ServerMessage::LeaveUser { gid, uid },
+                    Update::Message { uid, message } => {
+                        ServerMessage::Message { gid, uid, message }
                     }
                 };
 
@@ -402,7 +402,7 @@ struct State {
 
 struct Group {
     name: String,
-    clients: RwLock<Slab<Client>>,
+    users: RwLock<Slab<Client>>,
     sender: Sender<Update>,
 }
 
@@ -415,15 +415,15 @@ pub struct Client {
 #[derive(Clone)]
 enum Update {
     Join {
-        cid: usize,
+        uid: usize,
         // Name is included here due to the ABA problem.
         name: String,
     },
     Leave {
-        cid: usize,
+        uid: usize,
     },
     Message {
-        cid: usize,
+        uid: usize,
         message: String,
     },
 }

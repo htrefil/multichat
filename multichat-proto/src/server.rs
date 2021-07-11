@@ -6,20 +6,20 @@ use std::collections::HashMap;
 pub enum ServerMessage {
     /// Response to [`ClientMessage::ListGroups`](crate::client::ClientMessage::ListGroups).
     ListGroups { groups: HashMap<String, usize> },
-    /// A new client has joined a group.
-    InitClient {
+    /// A new user has joined a group.
+    InitUser {
         gid: usize,
-        cid: usize,
+        uid: usize,
         name: String,
     },
-    /// A client has left a group.
-    LeaveClient { gid: usize, cid: usize },
+    /// An user  has left a group.
+    LeaveUser { gid: usize, uid: usize },
     /// A message was sent to a group that a client has susbcribed to.
     Message {
         gid: usize,
-        cid: usize,
+        uid: usize,
         message: String,
     },
-    /// Server confirms [`ClientMessage::JoinClient`](crate::client::ClientMessage::JoinClient) request.
-    ConfirmClient { cid: usize },
+    /// Server confirms [`ClientMessage::JoinUser`](crate::client::ClientMessage::JoinUser) request.
+    ConfirmClient { uid: usize },
 }

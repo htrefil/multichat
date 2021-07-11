@@ -9,14 +9,14 @@ pub enum ClientMessage {
     JoinGroup { gid: usize },
     /// Unsubscribe from a groups messages.
     LeaveGroup { gid: usize },
-    /// Join a group as a particular client.
-    JoinClient { gid: usize, name: String },
-    /// Leave a group as a particular client.
-    LeaveClient { gid: usize, cid: usize },
-    /// Send a message as a particular client.
+    /// Join a group as an user.
+    JoinUser { gid: usize, name: String },
+    /// Leave a group as an user.
+    LeaveUser { gid: usize, uid: usize },
+    /// Send a message as an user.
     SendMessage {
         gid: usize,
-        cid: usize,
+        uid: usize,
         message: String,
     },
 }
