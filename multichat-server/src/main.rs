@@ -3,7 +3,7 @@ mod tls;
 
 use config::Config;
 use log::LevelFilter;
-use multichat_proto::{ClientMessage, ServerMessage};
+use multichat_proto::{ClientMessage, ServerInit, ServerMessage};
 use slab::Slab;
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -164,6 +164,16 @@ async fn handle_connection(
     // Send our version.
     multichat_proto::VERSION.write(&mut stream_write).await?;
 
+    // ...and our groups.
+    let groups = state
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(gid, group)| (group.name.clone(), gid))
+        .collect();
+
+    multichat_proto::write(&mut stream_write, &ServerInit { groups }).await?;
+
     // C2S.
     let (server_sender, mut server_receiver) = mpsc::unbounded_channel::<ClientMessage>();
     let mut server_handle = tokio::spawn(async move {
@@ -206,23 +216,6 @@ async fn handle_connection(
 
         match update {
             LocalUpdate::Client(message) => match message {
-                ClientMessage::ListGroups => {
-                    let groups = state
-                        .groups
-                        .iter()
-                        .enumerate()
-                        .map(|(gid, group)| {
-                            // We do a little troll... copying.
-                            (group.name.clone(), gid)
-                        })
-                        .collect();
-
-                    multichat_proto::write(
-                        &mut stream_write,
-                        &ServerMessage::ListGroups { groups },
-                    )
-                    .await?;
-                }
                 ClientMessage::JoinGroup { gid } => {
                     let group = state.groups.get(gid).ok_or_else(|| {
                         Error::new(ErrorKind::Other, "Attempted to join a nonexistent group")

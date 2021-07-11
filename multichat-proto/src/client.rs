@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 /// Message sent by client to server.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub enum ClientMessage {
-    /// Request to list groups.
-    ListGroups,
     /// Subscribe to a groups updates.
     JoinGroup { gid: usize },
     /// Unsubscribe from a groups messages.
