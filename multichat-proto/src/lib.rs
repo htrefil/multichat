@@ -1,3 +1,6 @@
+//! # multichat-proto
+//! Crate containing definitions and utilities for working with the Multichat protocol - a small and efficient
+//! protocol used for bridging textual communications from various sources over the internet.
 mod client;
 mod server;
 mod version;
