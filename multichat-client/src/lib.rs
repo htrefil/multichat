@@ -1,7 +1,7 @@
 //! Crate containing code for buiding clients for the Multichat protocol - a small and efficient
 //! protocol used for bridging textual communications from various sources over the internet.
 //!
-//! # Features
+//! # Cargo features
 //! - `tls` -- enables clients to connect to TLS encrypted servers with native_tls; enabled by default
 //!
 //! # Example echo client
@@ -40,3 +40,12 @@ mod tls;
 
 pub use builder::{ClientBuilder, ConnectError};
 pub use client::{Client, Update, UpdateKind};
+
+use tokio::net::TcpStream;
+
+/// Alias for a convenient way of naming the type of a TLS client.
+#[cfg(feature = "tls")]
+pub type TlsClient = Client<tokio_native_tls::TlsStream<TcpStream>>;
+
+/// Alias for a convenient way of naming the type of a basic client.
+pub type BasicClient = Client<TcpStream>;

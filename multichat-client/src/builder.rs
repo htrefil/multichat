@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
 use tokio_native_tls::TlsConnector;
 
-///! Configurable client builder.
+/// Configurable client builder.
 #[derive(Clone, Copy, Debug)]
 pub struct ClientBuilder<T> {
     connector: T,
