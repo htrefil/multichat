@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const VERSION: Version = Version { major: 1, minor: 0 };
 
 /// Protocol version, sent by server as the first message when a connection is established.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Version {
     pub major: u16,
     pub minor: u16,
@@ -53,5 +53,46 @@ impl Version {
 impl Display for Version {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn roundtrip_serialize(version: &Version) {
+        let mut buffer = Vec::new();
+        version.write(&mut buffer).await.unwrap();
+
+        let mut buffer = buffer.as_slice();
+        let deserialized = Version::read(&mut buffer).await.unwrap();
+
+        // Check that there is no unused leftover data.
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(version, &deserialized);
+    }
+
+    #[tokio::test]
+    async fn roundtrip() {
+        roundtrip_serialize(&Version { major: 1, minor: 1 }).await;
+
+        roundtrip_serialize(&Version {
+            major: 0xFFFF,
+            minor: 0,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn compat() {
+        assert_eq!(
+            Version { major: 0, minor: 0 }.is_compatible(Version { major: 0, minor: 0 }),
+            true
+        );
+
+        assert_eq!(
+            Version { major: 0, minor: 0 }.is_compatible(Version { major: 1, minor: 0 }),
+            false
+        );
     }
 }
