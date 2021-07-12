@@ -22,7 +22,7 @@
 //!     if update.uid != uid {
 //!         if let UpdateKind::Message(message) = update.kind {
 //!             client
-//!                 .send_message(uid, &format!("UID {} says: {}", update.uid, message))
+//!                 .send_message(uid, &message)
 //!                 .await?;
 //!         }
 //!     }

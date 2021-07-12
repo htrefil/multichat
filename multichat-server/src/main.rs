@@ -3,7 +3,7 @@ mod tls;
 
 use config::Config;
 use log::LevelFilter;
-use multichat_proto::{ClientMessage, ServerInit, ServerMessage};
+use multichat_proto::{Chunk, ClientMessage, ServerInit, ServerMessage};
 use slab::Slab;
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -169,7 +169,7 @@ async fn handle_connection(
         .groups
         .iter()
         .enumerate()
-        .map(|(gid, group)| (group.name.clone(), gid))
+        .map(|(gid, group)| (group.name.as_str().into(), gid))
         .collect();
 
     multichat_proto::write(&mut stream_write, &ServerInit { groups }).await?;
@@ -192,7 +192,7 @@ async fn handle_connection(
 
     loop {
         enum LocalUpdate {
-            Client(ClientMessage),
+            Client(ClientMessage<'static>),
             Group((usize, Update)),
         }
 
@@ -257,7 +257,7 @@ async fn handle_connection(
                             &ServerMessage::InitUser {
                                 gid,
                                 uid,
-                                name: client.name.clone(),
+                                name: client.name.as_str().into(),
                             },
                         )
                         .await?;
@@ -284,7 +284,7 @@ async fn handle_connection(
                     })?;
 
                     let uid = group.users.write().await.insert(Client {
-                        name: name.clone(),
+                        name: name.clone().into(),
                         owner: addr,
                     });
 
@@ -298,7 +298,7 @@ async fn handle_connection(
                     // Notify our group.
                     let _ = group.sender.send(Update::Join {
                         uid,
-                        name: name.clone(),
+                        name: name.clone().into(),
                     });
 
                     log::debug!(
@@ -359,10 +359,15 @@ async fn handle_connection(
                         ));
                     }
 
+                    let message_text = message
+                        .iter()
+                        .map(|chunk| chunk.contents.as_ref())
+                        .collect::<String>();
+
                     // Notify our group.
                     let _ = group.sender.send(Update::Message {
                         uid,
-                        message: message.clone(),
+                        message: message.into_owned().into(),
                     });
 
                     log::debug!(
@@ -370,17 +375,23 @@ async fn handle_connection(
                         addr,
                         gid,
                         uid,
-                        message
+                        message_text
                     );
                 }
             },
             LocalUpdate::Group((gid, update)) => {
                 let message = match update {
-                    Update::Join { uid, name } => ServerMessage::InitUser { gid, uid, name },
+                    Update::Join { uid, name } => ServerMessage::InitUser {
+                        gid,
+                        uid,
+                        name: name.into(),
+                    },
                     Update::Leave { uid } => ServerMessage::LeaveUser { gid, uid },
-                    Update::Message { uid, message } => {
-                        ServerMessage::Message { gid, uid, message }
-                    }
+                    Update::Message { uid, message } => ServerMessage::Message {
+                        gid,
+                        uid,
+                        message: message.into(),
+                    },
                 };
 
                 multichat_proto::write(&mut stream_write, &message).await?;
@@ -417,6 +428,6 @@ enum Update {
     },
     Message {
         uid: usize,
-        message: String,
+        message: Vec<Chunk<'static>>,
     },
 }

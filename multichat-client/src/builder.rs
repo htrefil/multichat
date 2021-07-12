@@ -42,7 +42,7 @@ impl<T: Connector> ClientBuilder<T> {
     pub async fn connect(
         &mut self,
         addr: impl Addr<'_>,
-    ) -> Result<(ServerInit, Client<T::Stream>), ConnectError<T::Err>> {
+    ) -> Result<(ServerInit<'static>, Client<T::Stream>), ConnectError<T::Err>> {
         let incoming_buffer = self
             .incoming_buffer
             .map_err(|_| ConnectError::InvalidParameter)?

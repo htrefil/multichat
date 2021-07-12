@@ -1,4 +1,4 @@
-use multichat_proto::{ClientMessage, Config, ServerInit, ServerMessage, Version};
+use multichat_proto::{Chunk, ClientMessage, Config, ServerInit, ServerMessage, Version};
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind};
 use tokio::io::{self, AsyncRead, AsyncWrite, BufReader, BufWriter, WriteHalf};
@@ -7,7 +7,7 @@ use tokio::sync::mpsc::{self, Receiver};
 /// A client object representing a connection to a Multichat server.
 pub struct Client<T> {
     stream_write: BufWriter<WriteHalf<T>>,
-    receiver: Receiver<Result<ServerMessage, Error>>,
+    receiver: Receiver<Result<ServerMessage<'static>, Error>>,
     // Updates queued while waiting for user join confirmation.
     updates: VecDeque<Update>,
     config: Config,
@@ -18,7 +18,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         incoming_buffer: usize,
         stream: T,
         config: Config,
-    ) -> Result<(ServerInit, Self), InitError> {
+    ) -> Result<(ServerInit<'static>, Self), InitError> {
         let (stream_read, stream_write) = io::split(stream);
 
         let mut stream_read = BufReader::new(stream_read);
@@ -94,7 +94,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         &mut self,
         gid: usize,
         uid: usize,
-        message: &str,
+        message: &[Chunk<'_>],
     ) -> Result<(), Error> {
         self.config
             .write(
@@ -142,7 +142,7 @@ pub enum UpdateKind {
     /// An user left the group.
     Leave,
     /// An user sent a message.
-    Message(String),
+    Message(Vec<Chunk<'static>>),
 }
 
 pub(crate) enum InitError {
@@ -156,12 +156,12 @@ impl From<Error> for InitError {
     }
 }
 
-fn translate_message(message: ServerMessage) -> Result<Update, usize> {
+fn translate_message(message: ServerMessage<'static>) -> Result<Update, usize> {
     let update = match message {
         ServerMessage::InitUser { gid, uid, name } => Update {
             gid,
             uid,
-            kind: UpdateKind::Join(name),
+            kind: UpdateKind::Join(name.into_owned()),
         },
         ServerMessage::LeaveUser { gid, uid } => Update {
             gid,
@@ -171,7 +171,7 @@ fn translate_message(message: ServerMessage) -> Result<Update, usize> {
         ServerMessage::Message { gid, uid, message } => Update {
             gid,
             uid,
-            kind: UpdateKind::Message(message),
+            kind: UpdateKind::Message(message.into_owned()),
         },
         ServerMessage::ConfirmClient { uid } => return Err(uid),
     };
