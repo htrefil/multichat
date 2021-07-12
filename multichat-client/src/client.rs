@@ -59,6 +59,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
 
     /// Joins a group.
     ///
+    /// Joining a nonexistent group is considered an error and will result in client disconnection by server.
+    ///
     /// This method is not cancel-safe.
     pub async fn join_group(&mut self, gid: usize) -> Result<(), Error> {
         self.config
@@ -69,6 +71,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
     }
 
     /// Creates an user and returns its UID.
+    ///
+    /// Specifying a nonexistent group is considered an error and will result in client disconnection by server.
     ///
     /// This method is not cancel-safe.
     pub async fn join_user(&mut self, gid: usize, name: &str) -> Result<usize, Error> {
@@ -92,6 +96,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
     }
 
     /// Sends a message to a group as an user.
+    ///
+    /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
     pub async fn send_message(
         &mut self,
         gid: usize,
