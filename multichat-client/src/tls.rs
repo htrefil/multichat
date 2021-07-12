@@ -57,6 +57,12 @@ impl<'a> Addr<'a> for &'a str {
     }
 }
 
+impl<'a> Addr<'a> for &'a String {
+    fn domain_name(self) -> Cow<'a, str> {
+        Cow::Borrowed(self)
+    }
+}
+
 impl Addr<'static> for SocketAddr {
     fn domain_name(self) -> Cow<'static, str> {
         Cow::Owned(self.ip().to_string())
