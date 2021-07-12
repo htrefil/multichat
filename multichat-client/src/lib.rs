@@ -31,6 +31,7 @@
 
 mod builder;
 mod client;
+mod text;
 mod tls;
 
 pub use builder::{ClientBuilder, ConnectError};

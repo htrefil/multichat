@@ -1,3 +1,5 @@
+use crate::text::AsChunks;
+
 use multichat_proto::{Chunk, ClientMessage, Config, ServerInit, ServerMessage, Version};
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind};
@@ -94,7 +96,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         &mut self,
         gid: usize,
         uid: usize,
-        message: &[Chunk<'_>],
+        message: impl AsChunks<'_>,
     ) -> Result<(), Error> {
         self.config
             .write(
@@ -102,7 +104,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
                 &ClientMessage::SendMessage {
                     gid,
                     uid,
-                    message: message.into(),
+                    message: message.as_chunks().as_ref().into(),
                 },
             )
             .await?;
