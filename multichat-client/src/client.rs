@@ -95,6 +95,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         }
     }
 
+    /// Renames an user.
+    pub async fn rename_user(&mut self, gid: usize, uid: usize, name: &str) -> Result<(), Error> {
+        self.config
+            .write(
+                &mut self.stream_write,
+                &ClientMessage::RenameUser {
+                    gid,
+                    uid,
+                    name: name.into(),
+                },
+            )
+            .await?;
+
+        Ok(())
+    }
+
     /// Sends a message to a group as an user.
     ///
     /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
@@ -149,6 +165,8 @@ pub enum UpdateKind {
     Join(String),
     /// An user left the group.
     Leave,
+    /// An user was renamed.
+    Rename(String),
     /// An user sent a message.
     Message(Vec<Chunk<'static>>),
 }
@@ -175,6 +193,11 @@ fn translate_message(message: ServerMessage<'static>) -> Result<Update, usize> {
             gid,
             uid,
             kind: UpdateKind::Leave,
+        },
+        ServerMessage::RenameUser { gid, uid, name } => Update {
+            gid,
+            uid,
+            kind: UpdateKind::Rename(name.into_owned()),
         },
         ServerMessage::Message { gid, uid, message } => Update {
             gid,

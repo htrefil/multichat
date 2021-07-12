@@ -21,6 +21,12 @@ pub enum ServerMessage<'a> {
         uid: usize,
         message: Cow<'a, [Chunk<'a>]>,
     },
+    /// An user was renamed.
+    RenameUser {
+        gid: usize,
+        uid: usize,
+        name: Cow<'a, str>,
+    },
     /// Server confirms [`ClientMessage::JoinUser`](crate::client::ClientMessage::JoinUser) request.
     ConfirmClient { uid: usize },
 }

@@ -14,6 +14,12 @@ pub enum ClientMessage<'a> {
     JoinUser { gid: usize, name: Cow<'a, str> },
     /// Leave a group as an user.
     LeaveUser { gid: usize, uid: usize },
+    /// Change the name of an user.
+    RenameUser {
+        gid: usize,
+        uid: usize,
+        name: Cow<'a, str>,
+    },
     /// Send a message as an user.
     SendMessage {
         gid: usize,
