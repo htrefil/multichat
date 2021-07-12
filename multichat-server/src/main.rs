@@ -175,19 +175,17 @@ async fn handle_connection(
     multichat_proto::write(&mut stream_write, &ServerInit { groups }).await?;
 
     // C2S.
-    let (server_sender, mut server_receiver) = mpsc::unbounded_channel::<ClientMessage>();
-    let mut server_handle = tokio::spawn(async move {
+    let (server_sender, mut server_receiver) = mpsc::channel(1);
+    tokio::spawn(async move {
         loop {
-            let message = multichat_proto::read(&mut stream_read).await?;
-            if server_sender.send(message).is_err() {
+            let result = multichat_proto::read(&mut stream_read).await;
+            if result.is_err() | server_sender.send(result).await.is_err() {
                 break;
             }
         }
-
-        Ok::<_, Error>(())
     });
 
-    let (update_sender, mut update_receiver) = mpsc::unbounded_channel();
+    let (update_sender, mut update_receiver) = mpsc::channel(state.groups.len().min(1));
     let mut group_handles = HashMap::new();
 
     loop {
@@ -196,22 +194,16 @@ async fn handle_connection(
             Group((usize, Update)),
         }
 
+        // It's not possible for the unwraps to fail unless either task panics and at that
+        // point we can just bring the whole thing down.
         let update = tokio::select! {
-            message = server_receiver.recv() => {
-                match message {
-                    Some(message) => LocalUpdate::Client(message),
-                    // The task exited due to an error, it will be propagated to us on the next iteration of the loop.
-                    None => continue,
-                }
-            }
-            update = update_receiver.recv() => {
-                // It's not possible for it to fail unless the task panics at which point we can just bring the whole thing down.
-                match update.unwrap() {
+            result = server_receiver.recv() => LocalUpdate::Client(result.unwrap()?),
+            result = update_receiver.recv() => {
+                match result.unwrap() {
                     Ok(update) => LocalUpdate::Group(update),
                     Err(num) => return Err(Error::new(ErrorKind::Other, format!("Skipped {} group updates", num))),
                 }
             }
-            Ok(Err(err)) = &mut server_handle => return Err(err),
         };
 
         match update {
@@ -235,7 +227,7 @@ async fn handle_connection(
 
                                 // The binary or is intentional, we want the result to be
                                 // sent regardless of being an error.
-                                if result.is_err() | update_sender.send(result).is_err() {
+                                if result.is_err() | update_sender.send(result).await.is_err() {
                                     return;
                                 }
                             }
