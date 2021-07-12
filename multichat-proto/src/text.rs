@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 /// A chunk of text with some style applied to it.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct Chunk<'a> {
     /// Text contents of this chunk.
     pub contents: Cow<'a, str>,
@@ -11,7 +11,7 @@ pub struct Chunk<'a> {
 }
 
 /// Style of a message chunk.
-#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Style {
     /// Bold text.
     pub bold: bool,

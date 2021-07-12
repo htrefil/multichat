@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 /// Message sent by server to client.
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 pub enum ServerMessage<'a> {
     /// A new user has joined a group.
     InitUser {
@@ -26,7 +26,7 @@ pub enum ServerMessage<'a> {
 }
 
 /// Initial message sent by server, right after sending its [`Version`](crate::version::Version), to a new client.
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 pub struct ServerInit<'a> {
     pub groups: HashMap<Cow<'a, str>, usize>,
 }

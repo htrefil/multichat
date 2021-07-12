@@ -3,7 +3,8 @@ use crate::tls::{Addr, BasicConnector, Connector};
 
 use multichat_proto::{Config, ServerInit, Version};
 use std::convert::TryInto;
-use std::fmt::{self, Display, Formatter};
+use std::error;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::io::Error;
 use std::num::NonZeroUsize;
 use tokio::net::TcpStream;
@@ -121,3 +122,5 @@ impl<T> From<InitError> for ConnectError<T> {
         }
     }
 }
+
+impl<T: Display + Debug> error::Error for ConnectError<T> {}

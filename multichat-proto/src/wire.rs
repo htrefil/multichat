@@ -108,3 +108,95 @@ pub async fn read<T: DeserializeOwned>(stream: impl AsyncRead + Unpin) -> Result
 pub async fn write(stream: impl AsyncWrite + Unpin, data: &impl Serialize) -> Result<(), Error> {
     Config::default().write(stream, data).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::ClientMessage;
+    use crate::server::{ServerInit, ServerMessage};
+    use crate::text::{Chunk, Style};
+
+    use std::borrow::Cow;
+    use std::collections::HashMap;
+    use std::fmt::Debug;
+
+    async fn roundtrip_serialize<T: DeserializeOwned + Serialize + Debug + Eq>(item: &T) {
+        let mut buffer = Vec::new();
+        write(&mut buffer, item).await.unwrap();
+
+        let mut buffer = buffer.as_slice();
+        let deserialized: T = read(&mut buffer).await.unwrap();
+
+        // Check that there is no unused leftover data.
+        assert_eq!(buffer.len(), 0);
+        assert_eq!(item, &deserialized);
+    }
+
+    #[tokio::test]
+    async fn roundtrip() {
+        roundtrip_serialize(&ServerInit {
+            groups: {
+                let mut groups = HashMap::new();
+                groups.insert("first".into(), 1);
+                groups.insert("second".into(), 2);
+
+                groups
+            },
+        })
+        .await;
+
+        roundtrip_serialize(&ServerMessage::ConfirmClient { uid: 123456 }).await;
+
+        roundtrip_serialize(&ClientMessage::JoinUser {
+            gid: 56789,
+            name: "Borůvka".into(),
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn length_write() {
+        let config = *Config::default().max_size(10);
+
+        assert_eq!(
+            config
+                .write(
+                    &mut Vec::new(),
+                    &ClientMessage::SendMessage {
+                        gid: 0,
+                        uid: 0,
+                        message: Cow::Borrowed(&[Chunk {
+                            contents: "0123456789".into(),
+                            style: Style::default()
+                        }])
+                    }
+                )
+                .await
+                .is_err(),
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn length_read() {
+        let mut buffer = Vec::new();
+        write(
+            &mut buffer,
+            &ClientMessage::SendMessage {
+                gid: 0,
+                uid: 0,
+                message: Cow::Borrowed(&[Chunk {
+                    contents: "0123456789".into(),
+                    style: Style::default(),
+                }]),
+            },
+        )
+        .await
+        .unwrap();
+
+        let config = *Config::default().max_size(10);
+        let result: Result<ClientMessage, _> = config.read(&mut buffer.as_slice()).await;
+
+        assert_eq!(result.is_err(), true);
+    }
+}

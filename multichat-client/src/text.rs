@@ -16,6 +16,14 @@ impl<'a> AsChunks<'a> for &'a Chunk<'a> {
     }
 }
 
+impl<'a> AsChunks<'a> for &'a Vec<Chunk<'a>> {
+    type Output = &'a Vec<Chunk<'a>>;
+
+    fn as_chunks(self) -> Self::Output {
+        self
+    }
+}
+
 impl<'a> AsChunks<'a> for Vec<Chunk<'a>> {
     type Output = Vec<Chunk<'a>>;
 
