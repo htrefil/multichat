@@ -1,0 +1,15 @@
+[package]
+name = "multichat-tui"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.6.1", features = ["macros", "io-std"] }
+structopt = "0.3.21"
+crossterm = { version = "0.20.0", features = ["event-stream"] }
+futures = "0.3.15"
+log = "0.4.14"
+multichat-client = { path = "../multichat-client" }
+
