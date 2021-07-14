@@ -95,7 +95,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         }
     }
 
+    /// Leaves an user.
+    ///
+    /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
+    pub async fn leave_user(&mut self, gid: usize, uid: usize) -> Result<(), Error> {
+        self.config
+            .write(
+                &mut self.stream_write,
+                &ClientMessage::LeaveUser { gid, uid },
+            )
+            .await?;
+
+        Ok(())
+    }
+
     /// Renames an user.
+    ///
+    /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
     pub async fn rename_user(&mut self, gid: usize, uid: usize, name: &str) -> Result<(), Error> {
         self.config
             .write(
