@@ -43,6 +43,17 @@ impl<'a> AsChunks<'a> for &'a str {
     }
 }
 
+impl<'a> AsChunks<'a> for &'a String {
+    type Output = SingleChunk<'a>;
+
+    fn as_chunks(self) -> Self::Output {
+        SingleChunk(Chunk {
+            contents: self.as_str().into(),
+            style: Default::default(),
+        })
+    }
+}
+
 impl AsChunks<'static> for String {
     type Output = SingleChunk<'static>;
 
