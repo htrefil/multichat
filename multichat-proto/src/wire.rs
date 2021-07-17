@@ -114,9 +114,8 @@ mod tests {
     use super::*;
     use crate::client::ClientMessage;
     use crate::server::{ServerInit, ServerMessage};
-    use crate::text::{Chunk, Style};
+    use crate::text::Message;
 
-    use std::borrow::Cow;
     use std::collections::HashMap;
     use std::fmt::Debug;
 
@@ -152,6 +151,20 @@ mod tests {
             name: "Borůvka".into(),
         })
         .await;
+
+        roundtrip_serialize(&ClientMessage::SendMessage {
+            gid: 58458,
+            uid: 111213,
+            message: Message::plain("hello").into(),
+        })
+        .await;
+
+        roundtrip_serialize(&ClientMessage::SendMessage {
+            gid: 58458,
+            uid: 111213,
+            message: Message::new("hello").into(),
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -165,10 +178,7 @@ mod tests {
                     &ClientMessage::SendMessage {
                         gid: 0,
                         uid: 0,
-                        message: Cow::Borrowed(&[Chunk {
-                            contents: "0123456789".into(),
-                            style: Style::default()
-                        }])
+                        message: Message::plain("0123456789"),
                     }
                 )
                 .await
@@ -185,10 +195,7 @@ mod tests {
             &ClientMessage::SendMessage {
                 gid: 0,
                 uid: 0,
-                message: Cow::Borrowed(&[Chunk {
-                    contents: "0123456789".into(),
-                    style: Style::default(),
-                }]),
+                message: Message::plain("0123456789"),
             },
         )
         .await

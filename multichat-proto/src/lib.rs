@@ -8,6 +8,6 @@ mod wire;
 
 pub use client::ClientMessage;
 pub use server::{ServerInit, ServerMessage};
-pub use text::{Chunk, Style};
+pub use text::{Chunk, Message, Style};
 pub use version::{Version, VERSION};
 pub use wire::{read, write, Config};

@@ -35,7 +35,6 @@
 
 mod builder;
 mod client;
-mod text;
 mod tls;
 
 pub use builder::{ClientBuilder, ConnectError};
@@ -49,3 +48,6 @@ pub type TlsClient = Client<tokio_native_tls::TlsStream<TcpStream>>;
 
 /// Alias for a convenient way of naming the type of a basic client.
 pub type BasicClient = Client<TcpStream>;
+
+// Re-export initial data from server.
+pub use multichat_proto::ServerInit;

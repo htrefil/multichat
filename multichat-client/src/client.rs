@@ -1,6 +1,5 @@
-use crate::text::AsChunks;
-
-use multichat_proto::{Chunk, ClientMessage, Config, ServerInit, ServerMessage, Version};
+use multichat_proto::{ClientMessage, Config, Message, ServerInit, ServerMessage, Version};
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind};
 use tokio::io::{self, AsyncRead, AsyncWrite, BufReader, BufWriter, WriteHalf};
@@ -134,7 +133,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         &mut self,
         gid: usize,
         uid: usize,
-        message: impl AsChunks<'_>,
+        message: &Message<'_>,
     ) -> Result<(), Error> {
         self.config
             .write(
@@ -142,7 +141,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
                 &ClientMessage::SendMessage {
                     gid,
                     uid,
-                    message: message.as_chunks().as_ref().into(),
+                    message: Cow::Borrowed(message),
                 },
             )
             .await?;
@@ -184,7 +183,7 @@ pub enum UpdateKind {
     /// An user was renamed.
     Rename(String),
     /// An user sent a message.
-    Message(Vec<Chunk<'static>>),
+    Message(Message<'static>),
 }
 
 pub(crate) enum InitError {

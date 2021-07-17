@@ -27,6 +27,8 @@ impl Version {
     ///
     /// The format of the version indicator, however, is not subject to change.
     pub async fn read(mut stream: impl AsyncRead + Unpin) -> Result<Self, Error> {
+        // False positive from clippy.
+        #[allow(clippy::eval_order_dependence)]
         Ok(Self {
             major: stream.read_u16().await?,
             minor: stream.read_u16().await?,

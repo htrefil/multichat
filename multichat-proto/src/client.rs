@@ -1,11 +1,11 @@
-use crate::text::Chunk;
+use crate::text::Message;
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 /// Message sent by client to server.
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
-pub enum ClientMessage<'a> {
+pub enum ClientMessage<'a, 'b> {
     /// Subscribe to a groups updates.
     JoinGroup { gid: usize },
     /// Unsubscribe from a groups messages.
@@ -24,6 +24,6 @@ pub enum ClientMessage<'a> {
     SendMessage {
         gid: usize,
         uid: usize,
-        message: Cow<'a, [Chunk<'a>]>,
+        message: Cow<'b, Message<'a>>,
     },
 }

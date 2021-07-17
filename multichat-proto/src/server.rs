@@ -1,4 +1,4 @@
-use crate::text::Chunk;
+use crate::text::Message;
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -19,7 +19,7 @@ pub enum ServerMessage<'a> {
     Message {
         gid: usize,
         uid: usize,
-        message: Cow<'a, [Chunk<'a>]>,
+        message: Cow<'a, Message<'a>>,
     },
     /// An user was renamed.
     RenameUser {
