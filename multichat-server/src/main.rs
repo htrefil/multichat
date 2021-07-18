@@ -400,7 +400,7 @@ async fn handle_connection(
                     });
 
                     log::debug!(
-                        "{}: Rename - GID: {}, UID: {}, name: {}",
+                        "{}: Rename - GID: {}, UID: {}, name: {:?}",
                         addr,
                         gid,
                         uid,
