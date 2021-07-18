@@ -3,8 +3,9 @@ mod tls;
 
 use config::Config;
 use log::LevelFilter;
-use multichat_proto::{Chunk, ClientMessage, ServerInit, ServerMessage};
+use multichat_proto::{ClientMessage, Message, ServerInit, ServerMessage};
 use slab::Slab;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::{Error, ErrorKind};
@@ -190,7 +191,7 @@ async fn handle_connection(
 
     loop {
         enum LocalUpdate {
-            Client(ClientMessage<'static>),
+            Client(ClientMessage<'static, 'static>),
             Group((usize, Update)),
         }
 
@@ -351,10 +352,7 @@ async fn handle_connection(
                         ));
                     }
 
-                    let message_text = message
-                        .iter()
-                        .map(|chunk| chunk.contents.as_ref())
-                        .collect::<String>();
+                    let message_text = message.text().into_owned();
 
                     // Notify our group.
                     let _ = group.sender.send(Update::Message {
@@ -426,7 +424,7 @@ async fn handle_connection(
                     Update::Message { uid, message } => ServerMessage::Message {
                         gid,
                         uid,
-                        message: message.into(),
+                        message: Cow::Owned(message),
                     },
                 };
 
@@ -468,6 +466,6 @@ enum Update {
     },
     Message {
         uid: usize,
-        message: Vec<Chunk<'static>>,
+        message: Message<'static>,
     },
 }
