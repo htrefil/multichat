@@ -295,7 +295,7 @@ async fn handle_connection(
                     });
 
                     log::debug!(
-                        "{}: Join user - GID: {}, name: {:?}, CID: {}",
+                        "{}: Join user - GID: {}, name: {:?}, UID: {}",
                         addr,
                         gid,
                         name,
@@ -327,7 +327,7 @@ async fn handle_connection(
                     // Notify our group.
                     let _ = group.sender.send(Update::Leave { uid });
 
-                    log::debug!("{}: Leave user - GID: {}, CID: {}", addr, gid, uid);
+                    log::debug!("{}: Leave user - GID: {}, UID: {}", addr, gid, uid);
                 }
                 ClientMessage::SendMessage { gid, uid, message } => {
                     let group = state.groups.get(gid).ok_or_else(|| {
@@ -361,7 +361,7 @@ async fn handle_connection(
                     });
 
                     log::debug!(
-                        "{}: Send message - GID: {}, CID: {}, message: {:?}",
+                        "{}: Send message - GID: {}, UID: {}, message: {:?}",
                         addr,
                         gid,
                         uid,
