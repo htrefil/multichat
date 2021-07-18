@@ -41,7 +41,7 @@ impl<T: Connector> ClientBuilder<T> {
 
     /// Connects to a Multichat server identified by `addr`.
     pub async fn connect(
-        &mut self,
+        &self,
         addr: impl Addr<'_>,
     ) -> Result<(ServerInit<'static>, Client<T::Stream>), ConnectError<T::Err>> {
         let incoming_buffer = self
