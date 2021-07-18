@@ -35,10 +35,11 @@
 
 mod builder;
 mod client;
-mod tls;
+mod net;
 
 pub use builder::{ClientBuilder, ConnectError};
 pub use client::{Client, Update, UpdateKind};
+pub use net::{EitherStream, Stream};
 
 use tokio::net::TcpStream;
 

@@ -1,5 +1,5 @@
 use crate::client::{Client, InitError};
-use crate::tls::{Addr, BasicConnector, Connector};
+use crate::net::{Addr, BasicConnector, Connector};
 
 use multichat_proto::{Config, ServerInit, Version};
 use std::convert::TryInto;
@@ -78,6 +78,20 @@ impl ClientBuilder<BasicConnector> {
 impl ClientBuilder<TlsConnector> {
     /// Creates a TLS builder using the provided connector.
     pub fn tls(connector: TlsConnector) -> Self {
+        Self {
+            connector,
+            incoming_buffer: Ok(None),
+            config: Config::default(),
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+impl ClientBuilder<Option<TlsConnector>> {
+    /// Creates a builder that might be TLS-backed or not.
+    ///
+    /// Useful for disambiguating whether you want TLS at runtime.
+    pub fn maybe_tls(connector: Option<TlsConnector>) -> Self {
         Self {
             connector,
             incoming_buffer: Ok(None),
