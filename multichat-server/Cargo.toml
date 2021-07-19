@@ -17,3 +17,4 @@ tokio-native-tls = "0.3.0"
 
 multichat-proto = { path = "../multichat-proto" }
 slab = "0.4.3"
+arrayvec = "0.7.1"
