@@ -1,7 +1,6 @@
 mod config;
 mod tls;
 
-use arrayvec::ArrayVec;
 use config::Config;
 use log::LevelFilter;
 use multichat_proto::{ClientMessage, Message, ServerInit, ServerMessage};
