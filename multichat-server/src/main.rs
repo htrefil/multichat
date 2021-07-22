@@ -136,14 +136,7 @@ async fn handle_server(
 
             // Remove all users created by this connection which didn't leave on their own.
             for group in &state.groups {
-                group.users.write().await.retain(|uid, user| {
-                    if user.owner == addr {
-                        let _ = group.sender.send(Update::Leave { uid });
-                        return false;
-                    }
-
-                    true
-                });
+                group.cleanup_users(addr).await;
             }
         });
     }
@@ -256,6 +249,12 @@ async fn handle_connection(
                     log::debug!("{}: Join group - GID: {}", addr, gid);
                 }
                 ClientMessage::LeaveGroup { gid } => {
+                    let group = state.groups.get(gid).ok_or_else(|| {
+                        Error::new(ErrorKind::Other, "Attempted to leave a nonexistent group")
+                    })?;
+
+                    group.cleanup_users(addr).await;
+
                     group_handles
                         .remove(&gid)
                         .ok_or_else(|| {
@@ -441,6 +440,19 @@ struct Group {
     name: String,
     users: RwLock<Slab<User>>,
     sender: Sender<Update>,
+}
+
+impl Group {
+    async fn cleanup_users(&self, addr: SocketAddr) {
+        self.users.write().await.retain(|uid, user| {
+            if user.owner == addr {
+                let _ = self.sender.send(Update::Leave { uid });
+                return false;
+            }
+
+            true
+        });
+    }
 }
 
 pub struct User {
