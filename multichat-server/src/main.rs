@@ -56,14 +56,17 @@ async fn main() {
             process::exit(1);
         }
     };
+
+    let update_buffer = config.update_buffer.map(|num| num.get()).unwrap_or(256);
     let state = State {
+        update_buffer,
         groups: config
             .groups
             .into_iter()
             .map(|name| Group {
                 name,
                 users: RwLock::new(Slab::new()),
-                sender: broadcast::channel(256).0,
+                sender: broadcast::channel(update_buffer).0,
             })
             .collect(),
     };
@@ -176,7 +179,8 @@ async fn handle_connection(
         }
     });
 
-    let (update_sender, mut update_receiver) = mpsc::channel(state.groups.len().min(1));
+    let (update_sender, mut update_receiver) =
+        mpsc::channel(state.groups.len().min(1) * state.update_buffer);
     let mut group_handles = HashMap::new();
 
     loop {
@@ -249,11 +253,14 @@ async fn handle_connection(
                     log::debug!("{}: Join group - GID: {}", addr, gid);
                 }
                 ClientMessage::LeaveGroup { gid } => {
-                    let group = state.groups.get(gid).ok_or_else(|| {
-                        Error::new(ErrorKind::Other, "Attempted to leave a nonexistent group")
-                    })?;
-
-                    group.cleanup_users(addr).await;
+                    state
+                        .groups
+                        .get(gid)
+                        .ok_or_else(|| {
+                            Error::new(ErrorKind::Other, "Attempted to leave a nonexistent group")
+                        })?
+                        .cleanup_users(addr)
+                        .await;
 
                     group_handles
                         .remove(&gid)
@@ -433,6 +440,7 @@ async fn handle_connection(
 }
 
 struct State {
+    update_buffer: usize,
     groups: Vec<Group>,
 }
 
