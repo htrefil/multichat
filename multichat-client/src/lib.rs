@@ -39,7 +39,7 @@ mod net;
 
 pub use builder::{ClientBuilder, ConnectError};
 pub use client::{Client, Update, UpdateKind};
-pub use net::{EitherStream, Stream};
+pub use net::{Connector, EitherStream, Stream};
 
 use tokio::net::TcpStream;
 
@@ -47,8 +47,10 @@ use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
 pub type TlsClient = Client<tokio_native_tls::TlsStream<TcpStream>>;
 
+#[cfg(feature = "tls")]
+pub type EitherTls = EitherStream<tokio_native_tls::TlsStream<TcpStream>>;
+
 /// Alias for a convenient way of naming the type of a basic client.
 pub type BasicClient = Client<TcpStream>;
 
-// Re-export initial data from server.
-pub use multichat_proto::ServerInit;
+pub use multichat_proto as proto;

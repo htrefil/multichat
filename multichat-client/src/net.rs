@@ -21,7 +21,7 @@ pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Stream for T {}
 
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 pub trait Connector {
     type Stream: Stream;
     type Err;
@@ -29,14 +29,14 @@ pub trait Connector {
     async fn connect(&self, domain: &str, stream: TcpStream) -> Result<Self::Stream, Self::Err>;
 }
 
-#[async_trait::async_trait(?Send)]
-impl<T: Connector + Send + Unpin> Connector for Option<T> {
+#[async_trait::async_trait]
+impl<T: Connector + Send + Unpin + Sync> Connector for Option<T> {
     type Stream = EitherStream<T::Stream>;
     type Err = T::Err;
 
     async fn connect(&self, domain: &str, stream: TcpStream) -> Result<Self::Stream, Self::Err> {
         if let Some(connector) = self {
-            return connector
+            return (*connector)
                 .connect(domain, stream)
                 .await
                 .map(EitherStream::Right);
@@ -113,8 +113,10 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for EitherStream<T> {
     }
 }
 
+unsafe impl<T: Send> Send for EitherStream<T> {}
+
 #[cfg(feature = "tls")]
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 impl Connector for TlsConnector {
     type Stream = TlsStream<TcpStream>;
     type Err = TlsError;
@@ -127,7 +129,7 @@ impl Connector for TlsConnector {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BasicConnector;
 
-#[async_trait::async_trait(?Send)]
+#[async_trait::async_trait]
 impl Connector for BasicConnector {
     type Stream = TcpStream;
     type Err = Infallible;
