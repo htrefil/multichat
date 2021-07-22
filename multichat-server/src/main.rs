@@ -137,7 +137,7 @@ async fn handle_server(
             // Remove all users created by this connection which didn't leave on their own.
             for group in &state.groups {
                 group.users.write().await.retain(|uid, user| {
-                    if user.owner != addr {
+                    if user.owner == addr {
                         let _ = group.sender.send(Update::Leave { uid });
                         return false;
                     }
@@ -309,13 +309,13 @@ async fn handle_connection(
 
                     let mut users = group.users.write().await;
                     let user = users.get(uid).ok_or_else(|| {
-                        Error::new(ErrorKind::Other, "Attempted to remove a nonexistent client")
+                        Error::new(ErrorKind::Other, "Attempted to remove a nonexistent user")
                     })?;
 
                     if user.owner != addr {
                         return Err(Error::new(
                             ErrorKind::Other,
-                            "Attempted to remove a non owned client",
+                            "Attempted to remove a non owned user",
                         ));
                     }
 
@@ -348,6 +348,8 @@ async fn handle_connection(
                             "Attempted to send a message as a non owned user",
                         ));
                     }
+
+                    drop(users);
 
                     let message_text = message.text().into_owned();
 
