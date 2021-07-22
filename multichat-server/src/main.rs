@@ -199,7 +199,7 @@ async fn handle_connection(
             result = update_receiver.recv() => {
                 match result.unwrap() {
                     Ok(update) => LocalUpdate::Group(update),
-                    Err(num) => return Err(Error::new(ErrorKind::Other, format!("Skipped {} group updates", num))),
+                    Err(num) => return Err(Error::new(ErrorKind::Other, format!("Skipped {} group update(s)", num))),
                 }
             }
         };
