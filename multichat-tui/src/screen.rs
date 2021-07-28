@@ -1,17 +1,27 @@
+mod input;
+mod log;
+
+pub use log::Level;
+
 use crossterm::cursor::MoveTo;
-use crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::style::{Color, Print, PrintStyledContent, ResetColor, SetForegroundColor, Stylize};
-use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
-use log::Level;
+use crossterm::terminal::{
+    self, Clear, ClearType, DisableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use futures::stream::StreamExt;
+use input::Input;
+use log::Log;
 use std::collections::VecDeque;
-use std::io::{self, Error, Stdout, Write};
-use std::mem;
+use std::io::{self, Error, Stdout};
 
 pub struct Screen {
     stdout: Stdout,
-    size: (u16, u16),
-    rows: VecDeque<Row>,
-    input: String,
+    stream: EventStream,
+    height: u16,
+    event: Option<TermEvent>,
+    log: Log,
+    input: Input,
 }
 
 impl Screen {
@@ -20,124 +30,100 @@ impl Screen {
         // will not be trashed. This is what vim does, for example.
         let mut stdout = io::stdout();
         crossterm::execute!(stdout, EnterAlternateScreen)?;
+        crossterm::execute!(stdout, DisableLineWrap)?;
 
-        let size = terminal::size()?;
+        let (width, height) = terminal::size()?;
         terminal::enable_raw_mode()?;
 
         Ok(Self {
             stdout,
-            size,
-            rows: VecDeque::new(),
-            input: String::new(),
+            stream: EventStream::new(),
+            height,
+            event: Some(TermEvent::Resize(width, height)),
+            log: Log::new(),
+            input: Input::new(),
         })
     }
 
-    /// Write an entry into the "log". It's used for both chat messages and other logs.
-    pub fn write(&mut self, level: Level, source: Option<String>, message: String) {
-        const MAX_ROWS: usize = 256;
-
-        if self.rows.len() == MAX_ROWS {
-            self.rows.pop_front();
-        }
-
-        self.rows.push_back(Row {
-            level,
-            source,
-            message,
-        });
+    pub fn log(&mut self, level: Level, contents: String) {
+        self.log.log(level, contents);
     }
 
-    pub fn event(&mut self, event: event::Event) -> Option<Event> {
-        match event {
-            event::Event::Key(event) => {
-                match event.code {
-                    KeyCode::Char('c' | 'C') if event.modifiers == KeyModifiers::CONTROL => {
-                        return Some(Event::Exit);
-                    }
-                    KeyCode::Char(c) => {
-                        self.input.push(c);
-                    }
-                    KeyCode::Backspace => {
-                        self.input.pop();
-                    }
-                    KeyCode::Enter => {
-                        return Some(Event::Input(mem::take(&mut self.input)));
-                    }
-                    _ => {}
-                }
+    pub async fn process(&mut self) -> Result<Option<Event>, Error> {
+        let event = match self.event.take() {
+            Some(event) => event,
+            None => self.stream.next().await.unwrap()?,
+        };
 
+        let event = match event {
+            TermEvent::Key(key) => match key.code {
+                KeyCode::Char('c' | 'C') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    Some(Event::Quit)
+                }
+                KeyCode::Char(c) => {
+                    self.input.input(c);
+                    None
+                }
+                KeyCode::Backspace => {
+                    self.input.erase();
+                    None
+                }
+                KeyCode::End => {
+                    self.input.last_char();
+                    None
+                }
+                KeyCode::Home => {
+                    self.input.first_char();
+                    None
+                }
+                KeyCode::Enter => Some(Event::Input(self.input.enter())),
+                KeyCode::Left => {
+                    self.input.prev_char();
+                    None
+                }
+                KeyCode::Right => {
+                    self.input.next_char();
+                    None
+                }
+                KeyCode::Up => {
+                    self.input.prev_history();
+                    None
+                }
+                KeyCode::Down => {
+                    self.input.next_history();
+                    None
+                }
+                _ => None,
+            },
+            TermEvent::Mouse(_) => None,
+            TermEvent::Resize(0..=1, _) | TermEvent::Resize(_, 0..=1) => Some(Event::Quit),
+            TermEvent::Resize(_, height) => {
+                self.height = height;
                 None
             }
-            event::Event::Mouse(_) => None,
-            event::Event::Resize(n, _) | event::Event::Resize(_, n) if n <= 1 => Some(Event::Exit),
-            event::Event::Resize(width, height) => {
-                self.size = (width, height);
-                None
-            }
-        }
+        };
+
+        Ok(event)
     }
 
     pub fn render(&mut self) -> Result<(), Error> {
-        // TODO: Render only what's necessary to re-render from the last frame.
-        //       Screen::{input,write} should note what, if anything, changed, so that we
-        //       don't do it all over again for no good reason.
+        self.log.render(&mut self.stdout, self.height)?;
+        self.input.render(&mut self.stdout, self.height)?;
 
-        // TODO: Doesn't compile, multiple mutable borrows.
-        todo!()
+        crossterm::execute!(&mut self.stdout)?;
 
-        // let width = self.size.0 as usize;
-        // let height = self.size.1 as usize;
-
-        // crossterm::queue!(self.stdout, MoveTo(0, 0))?;
-
-        // for row in self.rows.iter().rev().take(width - 1) {
-        //     let (c, color) = match row.level {
-        //         Level::Error => ('-', Color::Red),
-        //         Level::Warn => ('!', Color::Yellow),
-        //         Level::Info => ('+', Color::Green),
-        //         Level::Debug => ('?', Color::Blue),
-        //         Level::Trace => ('?', Color::DarkBlue),
-        //     };
-
-        //     crossterm::queue!(self.stdout, PrintStyledContent(c.with(color)), Print(" "))?;
-
-        //     if let Some(source) = &row.source {
-        //         crossterm::queue!(
-        //             self.stdout,
-        //             PrintStyledContent(source.as_str().with(Color::White)),
-        //             Print(" ")
-        //         )?;
-        //     }
-        // }
-
-        // let stdout = &mut self.stdout;
-        // crossterm::queue!(stdout, MoveTo(0, self.size.1 - 1))?;
-        // crossterm::queue!(stdout, Print(&self.input))?;
-
-        // crossterm::execute!(stdout)?;
-
-        // Ok(())
+        Ok(())
     }
-}
 
-impl Drop for Screen {
-    fn drop(&mut self) {
-        // Doesn't seem like we can do much more than silently ignore the errors.
-        // If we panic the error message won't most likely be correctly printed anyway.
-        let _ = terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen);
+    pub fn close(&mut self) -> Result<(), Error> {
+        terminal::disable_raw_mode()?;
+        crossterm::execute!(self.stdout, LeaveAlternateScreen)?;
+
+        Ok(())
     }
 }
 
 pub enum Event {
-    /// Ctrl+C pressed.
-    Exit,
-    /// Enter was pressed.
     Input(String),
-}
-
-struct Row {
-    level: Level,
-    source: Option<String>,
-    message: String,
+    Quit,
 }
