@@ -6,14 +6,14 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-structopt = "0.3.21"
-tokio = { version = "1.6.1", features = ["macros", "rt-multi-thread", "fs", "net", "sync"] }
+structopt = "0.3.25"
+tokio = { version = "1.15.0", features = ["macros", "rt-multi-thread", "fs", "net", "sync"] }
 toml = "0.5.8"
-serde = { version = "1.0.126", features = ["derive"] }
+serde = { version = "1.0.133", features = ["derive"] }
 log = "0.4.14"
-env_logger = "0.8.4"
-async-trait = "0.1.50"
+env_logger = "0.9.0"
+async-trait = "0.1.52"
 tokio-native-tls = "0.3.0"
 
 multichat-proto = { path = "../multichat-proto" }
-slab = "0.4.3"
+slab = "0.4.5"
