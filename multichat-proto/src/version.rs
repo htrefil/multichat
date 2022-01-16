@@ -26,7 +26,7 @@ impl Version {
     /// because the wire format is subject to change across protocol versions.
     ///
     /// The format of the version indicator, however, is not subject to change.
-    pub async fn read(mut stream: impl AsyncRead + Unpin) -> Result<Self, Error> {
+    pub async fn read(stream: &mut (impl AsyncRead + Unpin)) -> Result<Self, Error> {
         // False positive from clippy.
         #[allow(clippy::eval_order_dependence)]
         Ok(Self {
@@ -43,7 +43,7 @@ impl Version {
     /// because the wire format is subject to change across protocol versions.
     ///
     /// The format of the version indicator, however, is not subject to change.
-    pub async fn write(&self, mut stream: impl AsyncWrite + Unpin) -> Result<(), Error> {
+    pub async fn write(&self, stream: &mut (impl AsyncWrite + Unpin)) -> Result<(), Error> {
         stream.write_u16(self.major).await?;
         stream.write_u16(self.minor).await?;
         stream.flush().await?;

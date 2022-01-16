@@ -25,7 +25,7 @@ impl Config {
     /// function can make a lot of small read calls.
     pub async fn read<T: DeserializeOwned>(
         &self,
-        mut stream: impl AsyncRead + Unpin,
+        stream: &mut (impl AsyncRead + Unpin),
     ) -> Result<T, Error> {
         let mut buffer = Vec::new();
         loop {
@@ -61,7 +61,7 @@ impl Config {
     /// function can make a lot of small write calls.
     pub async fn write(
         &self,
-        mut stream: impl AsyncWrite + Unpin,
+        stream: &mut (impl AsyncWrite + Unpin),
         data: &impl Serialize,
     ) -> Result<(), Error> {
         let data =
@@ -98,14 +98,17 @@ impl Default for Config {
 /// Read a message from a stream with default [`Config`].
 ///
 /// See [`Config::read`] for details.
-pub async fn read<T: DeserializeOwned>(stream: impl AsyncRead + Unpin) -> Result<T, Error> {
+pub async fn read<T: DeserializeOwned>(stream: &mut (impl AsyncRead + Unpin)) -> Result<T, Error> {
     Config::default().read(stream).await
 }
 
 /// Writes a message to a stream with default [`Config`].
 ///
 /// See [`Config::write`] for details.
-pub async fn write(stream: impl AsyncWrite + Unpin, data: &impl Serialize) -> Result<(), Error> {
+pub async fn write(
+    stream: &mut (impl AsyncWrite + Unpin),
+    data: &impl Serialize,
+) -> Result<(), Error> {
     Config::default().write(stream, data).await
 }
 
