@@ -33,24 +33,34 @@
 //! }
 //! ```
 
+#![allow(async_fn_in_trait)]
+
 mod builder;
 mod client;
 mod net;
 
+use std::convert::Infallible;
+
 pub use builder::{ClientBuilder, ConnectError};
 pub use client::{Client, Update, UpdateKind};
+pub use multichat_proto as proto;
 pub use net::{Connector, EitherStream, Stream};
 
 use tokio::net::TcpStream;
 
+#[cfg(feature = "tls")]
+use tokio_rustls::client::TlsStream;
+
 /// Alias for a convenient way of naming the type of a TLS client.
 #[cfg(feature = "tls")]
-pub type TlsClient = Client<tokio_native_tls::TlsStream<TcpStream>>;
+pub type TlsClient = Client<TlsStream<TcpStream>>;
 
 #[cfg(feature = "tls")]
-pub type EitherTls = EitherStream<tokio_native_tls::TlsStream<TcpStream>>;
+pub type MaybeTlsClient = Client<EitherStream<TlsStream<TcpStream>>>;
+
+#[cfg(feature = "tls")]
+pub type EitherTls = EitherStream<TlsStream<TcpStream>>;
 
 /// Alias for a convenient way of naming the type of a basic client.
 pub type BasicClient = Client<TcpStream>;
-
-pub use multichat_proto as proto;
+pub type BasicConnectError = ConnectError<Infallible>;

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Config {
-    pub listen_addr: SocketAddr,
+    pub listen: SocketAddr,
     pub tls: Option<Tls>,
     pub update_buffer: Option<NonZeroUsize>,
     pub groups: HashSet<String>,
@@ -16,7 +16,6 @@ pub struct Config {
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Tls {
-    pub identity_path: PathBuf,
-    #[serde(default)]
-    pub identity_password: String,
+    pub certificate: PathBuf,
+    pub key: PathBuf,
 }

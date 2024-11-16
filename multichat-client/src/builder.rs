@@ -9,7 +9,7 @@ use std::io::Error;
 use std::num::NonZeroUsize;
 use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
-use tokio_native_tls::TlsConnector;
+use tokio_rustls::TlsConnector;
 
 /// Configurable client builder.
 #[derive(Clone, Copy, Debug)]
@@ -53,7 +53,7 @@ impl<T: Connector> ClientBuilder<T> {
         let stream = TcpStream::connect(addr).await?;
         let stream = self
             .connector
-            .connect(&addr.domain_name(), stream)
+            .connect(&addr.server_name(), stream)
             .await
             .map_err(ConnectError::Tls)?;
 

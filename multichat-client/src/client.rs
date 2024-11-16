@@ -1,4 +1,4 @@
-use multichat_proto::{ClientMessage, Config, Message, ServerInit, ServerMessage, Version};
+use multichat_proto::{Attachment, ClientMessage, Config, ServerInit, ServerMessage, Version};
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind};
@@ -61,7 +61,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
     /// Joining a nonexistent group is considered an error and will result in client disconnection by server.
     ///
     /// This method is not cancel-safe.
-    pub async fn join_group(&mut self, gid: usize) -> Result<(), Error> {
+    pub async fn join_group(&mut self, gid: u32) -> Result<(), Error> {
         self.config
             .write(&mut self.stream_write, &ClientMessage::JoinGroup { gid })
             .await?;
@@ -69,12 +69,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         Ok(())
     }
 
-    /// Creates an user and returns its UID.
+    /// Creates a user and returns its UID.
     ///
     /// Specifying a nonexistent group is considered an error and will result in client disconnection by server.
     ///
     /// This method is not cancel-safe.
-    pub async fn join_user(&mut self, gid: usize, name: &str) -> Result<usize, Error> {
+    pub async fn join_user(&mut self, gid: u32, name: &str) -> Result<u32, Error> {
         self.config
             .write(
                 &mut self.stream_write,
@@ -89,15 +89,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             let message = self.receiver.recv().await.ok_or(ErrorKind::BrokenPipe)??;
             match translate_message(message) {
                 Ok(update) => self.updates.push_back(update),
-                Err(uid) => return Ok(uid),
+                Err(Reply::ConfirmClient(uid)) => return Ok(uid),
+                Err(_) => return Err(Error::new(ErrorKind::InvalidData, "Unexpected message")),
             }
         }
     }
 
-    /// Leaves an user.
+    /// Leaves a user.
     ///
     /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
-    pub async fn leave_user(&mut self, gid: usize, uid: usize) -> Result<(), Error> {
+    pub async fn leave_user(&mut self, gid: u32, uid: u32) -> Result<(), Error> {
         self.config
             .write(
                 &mut self.stream_write,
@@ -108,10 +109,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         Ok(())
     }
 
-    /// Renames an user.
+    /// Renames a user.
     ///
     /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
-    pub async fn rename_user(&mut self, gid: usize, uid: usize, name: &str) -> Result<(), Error> {
+    pub async fn rename_user(&mut self, gid: u32, uid: u32, name: &str) -> Result<(), Error> {
         self.config
             .write(
                 &mut self.stream_write,
@@ -126,14 +127,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         Ok(())
     }
 
-    /// Sends a message to a group as an user.
+    /// Sends a message to a group as a user.
     ///
     /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
     pub async fn send_message(
         &mut self,
-        gid: usize,
-        uid: usize,
-        message: &Message<'_>,
+        gid: u32,
+        uid: u32,
+        message: &str,
+        attachments: &[Cow<'_, [u8]>],
     ) -> Result<(), Error> {
         self.config
             .write(
@@ -141,8 +143,44 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
                 &ClientMessage::SendMessage {
                     gid,
                     uid,
-                    message: Cow::Borrowed(message),
+                    message: message.into(),
+                    attachments: attachments.into(),
                 },
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Downloads an attachment.
+    ///
+    /// Specifying a nonexistent attachment ID is considered an error and will result in client disconnection by server.
+    pub async fn download_attachment(&mut self, id: u32) -> Result<Vec<u8>, Error> {
+        self.config
+            .write(
+                &mut self.stream_write,
+                &ClientMessage::DownloadAttachment { id },
+            )
+            .await?;
+
+        loop {
+            let message = self.receiver.recv().await.ok_or(ErrorKind::BrokenPipe)??;
+            match translate_message(message) {
+                Ok(update) => self.updates.push_back(update),
+                Err(Reply::Attachment(data)) => return Ok(data),
+                Err(_) => return Err(Error::new(ErrorKind::InvalidData, "Unexpected message")),
+            }
+        }
+    }
+
+    /// Ignores an attachment.
+    ///
+    /// Specifying a nonexistent attachment ID is considered an error and will result in client disconnection by server.
+    pub async fn ignore_attachment(&mut self, id: u32) -> Result<(), Error> {
+        self.config
+            .write(
+                &mut self.stream_write,
+                &ClientMessage::IgnoreAttachment { id },
             )
             .await?;
 
@@ -167,23 +205,32 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
 #[derive(Clone, Debug)]
 pub struct Update {
     /// The group ID that this update concerns.
-    pub gid: usize,
+    pub gid: u32,
     /// The user ID that this update concerns.
-    pub uid: usize,
+    pub uid: u32,
     /// Type of the update.
     pub kind: UpdateKind,
 }
 
 #[derive(Clone, Debug)]
 pub enum UpdateKind {
-    /// An user joined the group.
+    /// A user joined the group.
     Join(String),
-    /// An user left the group.
+    /// A user left the group.
     Leave,
-    /// An user was renamed.
+    /// A user was renamed.
     Rename(String),
-    /// An user sent a message.
-    Message(Message<'static>),
+    /// A user sent a message.
+    Message(Message),
+}
+
+#[derive(Clone, Debug)]
+pub struct Message {
+    /// The message text.
+    pub message: String,
+    /// The message attachments.
+    /// Each attachment must be either [downloaded](Client::download_attachment) or [ignored](Client::ignore_attachment).
+    pub attachments: Vec<Attachment>,
 }
 
 pub(crate) enum InitError {
@@ -197,30 +244,42 @@ impl From<Error> for InitError {
     }
 }
 
-fn translate_message(message: ServerMessage<'static>) -> Result<Update, usize> {
-    let update = match message {
-        ServerMessage::InitUser { gid, uid, name } => Update {
+enum Reply {
+    Attachment(Vec<u8>),
+    ConfirmClient(u32),
+}
+
+fn translate_message(message: ServerMessage<'static>) -> Result<Update, Reply> {
+    match message {
+        ServerMessage::InitUser { gid, uid, name } => Ok(Update {
             gid,
             uid,
             kind: UpdateKind::Join(name.into_owned()),
-        },
-        ServerMessage::LeaveUser { gid, uid } => Update {
+        }),
+        ServerMessage::LeaveUser { gid, uid } => Ok(Update {
             gid,
             uid,
             kind: UpdateKind::Leave,
-        },
-        ServerMessage::RenameUser { gid, uid, name } => Update {
+        }),
+        ServerMessage::RenameUser { gid, uid, name } => Ok(Update {
             gid,
             uid,
             kind: UpdateKind::Rename(name.into_owned()),
-        },
-        ServerMessage::Message { gid, uid, message } => Update {
+        }),
+        ServerMessage::Message {
             gid,
             uid,
-            kind: UpdateKind::Message(message.into_owned()),
-        },
-        ServerMessage::ConfirmClient { uid } => return Err(uid),
-    };
-
-    Ok(update)
+            message,
+            attachments,
+        } => Ok(Update {
+            gid,
+            uid,
+            kind: UpdateKind::Message(Message {
+                message: message.into_owned(),
+                attachments,
+            }),
+        }),
+        ServerMessage::ConfirmClient { uid } => Err(Reply::ConfirmClient(uid)),
+        ServerMessage::Attachment { data } => Err(Reply::Attachment(data.into_owned())),
+    }
 }

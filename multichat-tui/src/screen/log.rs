@@ -1,13 +1,14 @@
 use crossterm::cursor::MoveTo;
 use crossterm::style::{Color, Print, PrintStyledContent, Stylize};
 use crossterm::terminal::{Clear, ClearType};
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{Error, Write};
 
 const MAX_ROWS: usize = 256;
 
 pub struct Log {
-    rows: VecDeque<(Level, String)>,
+    rows: VecDeque<(Level, Cow<'static, str>)>,
     changed: bool,
     height: u16,
 }
@@ -21,7 +22,7 @@ impl Log {
         }
     }
 
-    pub fn log(&mut self, level: Level, contents: String) {
+    pub fn log(&mut self, level: Level, contents: Cow<'static, str>) {
         if self.rows.len() == MAX_ROWS {
             self.rows.pop_front();
         }
@@ -44,7 +45,6 @@ impl Log {
 
             let (prefix, color) = match level {
                 Level::Error => ("[-]", Color::Red),
-                Level::Warn => ("[!]", Color::Yellow),
                 Level::Info => ("[+]", Color::Green),
             };
 
@@ -52,7 +52,7 @@ impl Log {
                 &mut writer,
                 PrintStyledContent(prefix.with(color)),
                 Print(" "),
-                Print(contents),
+                Print(contents)
             )?;
         }
 
@@ -68,13 +68,12 @@ impl Log {
 
         self.rows
             .range(offset..)
-            .map(|(level, contents)| (*level, contents.as_str()))
+            .map(|(level, contents)| (*level, contents.as_ref()))
     }
 }
 
 #[derive(Clone, Copy)]
 pub enum Level {
     Info,
-    Warn,
     Error,
 }

@@ -1,16 +1,16 @@
 [package]
 name = "multichat-client"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 tokio = { version = "1.15.0", features = ["macros", "net", "sync", "rt"] }
-tokio-native-tls = { version = "0.3.0", optional = true }
+tokio-rustls = { version = "0.26.0", optional = true }
+
 multichat-proto = { path = "../multichat-proto" }
-async-trait = "0.1.52"
 
 [features]
 default = ["tls"]
-tls = ["tokio-native-tls"]
+tls = ["tokio-rustls"]

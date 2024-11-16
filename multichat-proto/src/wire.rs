@@ -117,7 +117,6 @@ mod tests {
     use super::*;
     use crate::client::ClientMessage;
     use crate::server::{ServerInit, ServerMessage};
-    use crate::text::Message;
 
     use std::collections::HashMap;
     use std::fmt::Debug;
@@ -158,14 +157,8 @@ mod tests {
         roundtrip_serialize(&ClientMessage::SendMessage {
             gid: 58458,
             uid: 111213,
-            message: Message::plain("hello").into(),
-        })
-        .await;
-
-        roundtrip_serialize(&ClientMessage::SendMessage {
-            gid: 58458,
-            uid: 111213,
-            message: Message::new("hello").into(),
+            message: "hello".into(),
+            attachments: Vec::new().into(),
         })
         .await;
     }
@@ -181,7 +174,8 @@ mod tests {
                     &ClientMessage::SendMessage {
                         gid: 0,
                         uid: 0,
-                        message: Message::plain("0123456789"),
+                        message: "0123456789".into(),
+                        attachments: Vec::new().into()
                     }
                 )
                 .await
@@ -198,7 +192,8 @@ mod tests {
             &ClientMessage::SendMessage {
                 gid: 0,
                 uid: 0,
-                message: Message::plain("0123456789"),
+                message: "0123456789".into(),
+                attachments: Vec::new().into(),
             },
         )
         .await

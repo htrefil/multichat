@@ -1,6 +1,7 @@
 use std::borrow::Cow;
+use thiserror::Error;
 
-struct Args<'a> {
+pub struct Args<'a> {
     data: &'a str,
     offset: usize,
 }
@@ -115,15 +116,19 @@ impl<'a> Iterator for Args<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum Error {
+    #[error("Unexpected quote")]
     UnexpectedQuote,
+    #[error("Unfinished escape")]
     UnfinishedEscape,
+    #[error("Unfinished quote")]
     UnfinishedQuote,
+    #[error("Unknown escape: {0}")]
     UnknownEscape(char),
 }
 
-pub fn args(data: &str) -> impl Iterator<Item = Result<Cow<'_, str>, Error>> {
+pub fn args(data: &str) -> Args<'_> {
     Args { data, offset: 0 }
 }
 

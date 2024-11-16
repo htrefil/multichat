@@ -3,16 +3,12 @@ mod log;
 
 pub use log::Level;
 
-use crossterm::cursor::MoveTo;
-use crossterm::event::{self, Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::style::{Color, Print, PrintStyledContent, ResetColor, SetForegroundColor, Stylize};
-use crossterm::terminal::{
-    self, Clear, ClearType, DisableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::event::{Event as TermEvent, EventStream, KeyCode, KeyModifiers};
+use crossterm::terminal::{self, DisableLineWrap, EnterAlternateScreen, LeaveAlternateScreen};
 use futures::stream::StreamExt;
 use input::Input;
 use log::Log;
-use std::collections::VecDeque;
+use std::borrow::Cow;
 use std::io::{self, Error, Stdout};
 
 pub struct Screen {
@@ -45,8 +41,9 @@ impl Screen {
         })
     }
 
-    pub fn log(&mut self, level: Level, contents: String) {
-        self.log.log(level, contents);
+    pub fn log(&mut self, level: Level, contents: impl Into<Cow<'static, str>>) {
+        self.log.log(level, contents.into());
+        self.input.mark_changed();
     }
 
     pub async fn process(&mut self) -> Result<Option<Event>, Error> {

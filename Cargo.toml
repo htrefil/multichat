@@ -1,2 +1,3 @@
 [workspace]
+resolver = "2"
 members = ["multichat-proto", "multichat-server", "multichat-client", "multichat-tui"]

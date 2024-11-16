@@ -1,5 +1,3 @@
-use crate::text::Message;
-
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -7,23 +5,28 @@ use std::borrow::Cow;
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 pub enum ClientMessage<'a, 'b> {
     /// Subscribe to a groups updates.
-    JoinGroup { gid: usize },
+    JoinGroup { gid: u32 },
     /// Unsubscribe from a groups messages.
-    LeaveGroup { gid: usize },
-    /// Join a group as an user.
-    JoinUser { gid: usize, name: Cow<'a, str> },
-    /// Leave a group as an user.
-    LeaveUser { gid: usize, uid: usize },
-    /// Change the name of an user.
+    LeaveGroup { gid: u32 },
+    /// Join a group as a user.
+    JoinUser { gid: u32, name: Cow<'a, str> },
+    /// Leave a group as a user.
+    LeaveUser { gid: u32, uid: u32 },
+    /// Change the name of a user.
     RenameUser {
-        gid: usize,
-        uid: usize,
+        gid: u32,
+        uid: u32,
         name: Cow<'a, str>,
     },
-    /// Send a message as an user.
+    /// Send a message as a user.
     SendMessage {
-        gid: usize,
-        uid: usize,
-        message: Cow<'b, Message<'a>>,
+        gid: u32,
+        uid: u32,
+        message: Cow<'b, str>,
+        attachments: Cow<'b, [Cow<'a, [u8]>]>,
     },
+    /// Download an attachment.
+    DownloadAttachment { id: u32 },
+    /// Ignore an attachment.
+    IgnoreAttachment { id: u32 },
 }

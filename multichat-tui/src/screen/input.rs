@@ -139,6 +139,10 @@ impl Input {
         Ok(())
     }
 
+    pub fn mark_changed(&mut self) {
+        self.changed = true;
+    }
+
     fn as_mut(&mut self) -> &mut Vec<char> {
         self.kind = match std::mem::replace(&mut self.kind, InputKind::History(0)) {
             InputKind::History(idx) => InputKind::Owned(self.history[idx].clone()),

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::convert::Infallible;
-use std::io::{Error, IoSlice};
+use std::io::{Error, ErrorKind, IoSlice};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -8,9 +8,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 #[cfg(feature = "tls")]
-use tokio_native_tls::native_tls::Error as TlsError;
-#[cfg(feature = "tls")]
-use tokio_native_tls::{TlsConnector, TlsStream};
+use tokio_rustls::{client::TlsStream, rustls::pki_types::ServerName, TlsConnector};
 
 /// Trait implemented for all async IO streams suitable for a [`Client`](crate::client::Client).
 ///
@@ -21,23 +19,29 @@ pub trait Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Stream for T {}
 
-#[async_trait::async_trait]
 pub trait Connector {
     type Stream: Stream;
     type Err;
 
-    async fn connect(&self, domain: &str, stream: TcpStream) -> Result<Self::Stream, Self::Err>;
+    async fn connect(
+        &self,
+        server_name: &str,
+        stream: TcpStream,
+    ) -> Result<Self::Stream, Self::Err>;
 }
 
-#[async_trait::async_trait]
 impl<T: Connector + Send + Unpin + Sync> Connector for Option<T> {
     type Stream = EitherStream<T::Stream>;
     type Err = T::Err;
 
-    async fn connect(&self, domain: &str, stream: TcpStream) -> Result<Self::Stream, Self::Err> {
+    async fn connect(
+        &self,
+        server_name: &str,
+        stream: TcpStream,
+    ) -> Result<Self::Stream, Self::Err> {
         if let Some(connector) = self {
             return (*connector)
-                .connect(domain, stream)
+                .connect(server_name, stream)
                 .await
                 .map(EitherStream::Right);
         }
@@ -116,84 +120,94 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for EitherStream<T> {
 unsafe impl<T: Send> Send for EitherStream<T> {}
 
 #[cfg(feature = "tls")]
-#[async_trait::async_trait]
 impl Connector for TlsConnector {
     type Stream = TlsStream<TcpStream>;
-    type Err = TlsError;
+    type Err = Error;
 
-    async fn connect(&self, domain: &str, stream: TcpStream) -> Result<Self::Stream, Self::Err> {
-        TlsConnector::connect(self, domain, stream).await
+    async fn connect(
+        &self,
+        server_name: &str,
+        stream: TcpStream,
+    ) -> Result<Self::Stream, Self::Err> {
+        let server_name = ServerName::try_from(server_name)
+            .map_err(|err| Error::new(ErrorKind::InvalidInput, err))?
+            .to_owned();
+
+        TlsConnector::connect(self, server_name, stream).await
     }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BasicConnector;
 
-#[async_trait::async_trait]
 impl Connector for BasicConnector {
     type Stream = TcpStream;
     type Err = Infallible;
 
-    async fn connect(&self, _domain: &str, stream: TcpStream) -> Result<Self::Stream, Self::Err> {
+    async fn connect(
+        &self,
+        _server_name: &str,
+        stream: TcpStream,
+    ) -> Result<Self::Stream, Self::Err> {
         Ok(stream)
     }
 }
 
 /// Trait for efficient extraction of domain names from ToSocketAddr-like types.
 pub trait Addr<'a>: ToSocketAddrs + Clone + Copy {
-    fn domain_name(self) -> Cow<'a, str>;
+    fn server_name(self) -> Cow<'a, str>;
 }
 
 impl<'a> Addr<'a> for (&'a str, u16) {
-    fn domain_name(self) -> Cow<'a, str> {
+    fn server_name(self) -> Cow<'a, str> {
         Cow::Borrowed(self.0)
     }
 }
 
 impl<'a> Addr<'a> for &'a str {
-    fn domain_name(self) -> Cow<'a, str> {
+    fn server_name(self) -> Cow<'a, str> {
         Cow::Borrowed(self)
     }
 }
 
 impl<'a> Addr<'a> for &'a String {
-    fn domain_name(self) -> Cow<'a, str> {
+    fn server_name(self) -> Cow<'a, str> {
         Cow::Borrowed(self)
     }
 }
 
 impl Addr<'static> for SocketAddr {
-    fn domain_name(self) -> Cow<'static, str> {
+    fn server_name(self) -> Cow<'static, str> {
         Cow::Owned(self.ip().to_string())
     }
 }
 
 impl Addr<'static> for SocketAddrV4 {
-    fn domain_name(self) -> Cow<'static, str> {
+    fn server_name(self) -> Cow<'static, str> {
         Cow::Owned(self.ip().to_string())
     }
 }
 
 impl Addr<'static> for SocketAddrV6 {
-    fn domain_name(self) -> Cow<'static, str> {
+    fn server_name(self) -> Cow<'static, str> {
         Cow::Owned(self.ip().to_string())
     }
 }
 
 impl Addr<'static> for (IpAddr, u16) {
-    fn domain_name(self) -> Cow<'static, str> {
+    fn server_name(self) -> Cow<'static, str> {
         Cow::Owned(self.0.to_string())
     }
 }
 
 impl Addr<'static> for (Ipv4Addr, u16) {
-    fn domain_name(self) -> Cow<'static, str> {
+    fn server_name(self) -> Cow<'static, str> {
         Cow::Owned(self.0.to_string())
     }
 }
 
 impl Addr<'static> for (Ipv6Addr, u16) {
-    fn domain_name(self) -> Cow<'static, str> {
+    fn server_name(self) -> Cow<'static, str> {
         Cow::Owned(self.0.to_string())
     }
 }

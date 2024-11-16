@@ -1,19 +1,20 @@
 [package]
 name = "multichat-server"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-structopt = "0.3.25"
 tokio = { version = "1.15.0", features = ["macros", "rt-multi-thread", "fs", "net", "sync"] }
 toml = "0.5.8"
 serde = { version = "1.0.133", features = ["derive"] }
-log = "0.4.14"
-env_logger = "0.9.0"
-async-trait = "0.1.52"
-tokio-native-tls = "0.3.0"
+tokio-rustls = "0.26.0"
+slab = "0.4.5"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing = "0.1.40"
+clap = { version = "4.5.20", features = ["derive"] }
 
 multichat-proto = { path = "../multichat-proto" }
-slab = "0.4.5"
+thiserror = "2.0.3"
+rustls-pemfile = "2.2.0"
