@@ -1,6 +1,6 @@
 use crate::tls::Acceptor;
 
-use multichat_proto::{Attachment, ClientMessage, ServerInit, ServerMessage};
+use multichat_proto::{Attachment, ClientMessage, Config, ServerInit, ServerMessage};
 use slab::Slab;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ pub async fn run(
     acceptor: impl Acceptor,
     groups: impl IntoIterator<Item = String>,
     update_buffer: Option<NonZeroUsize>,
+    config: Config,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen_addr).await?;
 
@@ -57,7 +58,7 @@ pub async fn run(
                     }
                 };
 
-                match connection(stream, addr, &state).await {
+                match connection(stream, addr, &state, config).await {
                     Ok(_) => tracing::info!("Disconnected"),
                     Err(err) => tracing::error!("Disconnected: {}", err),
                 }
@@ -76,6 +77,7 @@ async fn connection(
     stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
     addr: SocketAddr,
     state: &State,
+    config: Config,
 ) -> Result<(), Error> {
     let (stream_read, stream_write) = io::split(stream);
 
@@ -83,6 +85,7 @@ async fn connection(
     let mut stream_write = BufWriter::new(stream_write);
 
     // Send our version.
+    // Intentionally bypass config write because Version does not implement Serialize.
     multichat_proto::VERSION.write(&mut stream_write).await?;
 
     // ...and our groups.
@@ -93,13 +96,15 @@ async fn connection(
         .map(|(gid, group)| (group.name.as_str().into(), gid.try_into().unwrap()))
         .collect();
 
-    multichat_proto::write(&mut stream_write, &ServerInit { groups }).await?;
+    config
+        .write(&mut stream_write, &ServerInit { groups })
+        .await?;
 
     // C2S.
     let (server_sender, mut server_receiver) = mpsc::channel(1);
     tokio::spawn(async move {
         loop {
-            let result = multichat_proto::read(&mut stream_read).await;
+            let result = config.read(&mut stream_read).await;
             if result.is_err() | server_sender.send(result).await.is_err() {
                 break;
             }
@@ -172,15 +177,16 @@ async fn connection(
                     for (uid, user) in &*group.users.read().await {
                         // XXX: Perhaps it would be wise to write the message
                         //      while the user list is not locked.
-                        multichat_proto::write(
-                            &mut stream_write,
-                            &ServerMessage::InitUser {
-                                gid,
-                                uid: uid.try_into().unwrap(),
-                                name: user.name.as_str().into(),
-                            },
-                        )
-                        .await?;
+                        config
+                            .write(
+                                &mut stream_write,
+                                &ServerMessage::InitUser {
+                                    gid,
+                                    uid: uid.try_into().unwrap(),
+                                    name: user.name.as_str().into(),
+                                },
+                            )
+                            .await?;
                     }
 
                     tracing::debug!(%gid, "Join group");
@@ -228,11 +234,9 @@ async fn connection(
                         .unwrap();
 
                     // Notify our client.
-                    multichat_proto::write(
-                        &mut stream_write,
-                        &ServerMessage::ConfirmClient { uid },
-                    )
-                    .await?;
+                    config
+                        .write(&mut stream_write, &ServerMessage::ConfirmClient { uid })
+                        .await?;
 
                     // Notify our group.
                     let _ = group.sender.send(Update::Join {
@@ -383,13 +387,14 @@ async fn connection(
                             )
                         })?;
 
-                    multichat_proto::write(
-                        &mut stream_write,
-                        &ServerMessage::Attachment {
-                            data: attachment.as_slice().into(),
-                        },
-                    )
-                    .await?;
+                    config
+                        .write(
+                            &mut stream_write,
+                            &ServerMessage::Attachment {
+                                data: attachment.as_slice().into(),
+                            },
+                        )
+                        .await?;
 
                     tracing::debug!(%id, "Download attachment");
                 }
@@ -446,7 +451,7 @@ async fn connection(
                     }
                 };
 
-                multichat_proto::write(&mut stream_write, &message).await?;
+                config.write(&mut stream_write, &message).await?;
             }
         }
     }

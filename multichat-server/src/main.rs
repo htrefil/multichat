@@ -4,6 +4,7 @@ mod tls;
 
 use clap::Parser;
 use config::Config;
+use multichat_proto::Config as ProtoConfig;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use tls::DefaultAcceptor;
@@ -49,6 +50,9 @@ async fn main() -> ExitCode {
         }
     };
 
+    let mut proto_config = ProtoConfig::default();
+    proto_config.max_size(config.max_size);
+
     let result = match config.tls {
         Some(tls) => {
             let acceptor = match tls::configure(&tls.certificate, &tls.key).await {
@@ -59,7 +63,14 @@ async fn main() -> ExitCode {
                 }
             };
 
-            server::run(config.listen, acceptor, config.groups, config.update_buffer).await
+            server::run(
+                config.listen,
+                acceptor,
+                config.groups,
+                config.update_buffer,
+                proto_config,
+            )
+            .await
         }
         None => {
             server::run(
@@ -67,6 +78,7 @@ async fn main() -> ExitCode {
                 DefaultAcceptor,
                 config.groups,
                 config.update_buffer,
+                proto_config,
             )
             .await
         }
