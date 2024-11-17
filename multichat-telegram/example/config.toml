@@ -1,0 +1,10 @@
+[telegram]
+token = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz1234567890"
+
+[multichat]
+server = "example.com:8585"
+# certificate = "example.crt"
+
+[[chats]]
+multichat-group = "foo"
+telegram-chat = 6598948496
