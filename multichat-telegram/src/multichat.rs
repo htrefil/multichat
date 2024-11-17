@@ -166,11 +166,12 @@ pub async fn run(
                                 attachments.push(data);
                             }
 
+                            let mut text = Some(text);
                             for chat_id in group_to_chat.get(&update.gid).unwrap() {
                                 bot.send_media_group(
                                     *chat_id,
                                     attachments.iter().map(|attachment| {
-                                        into_input_media(attachment.clone(), text.clone())
+                                        into_input_media(attachment.clone(), text.take())
                                     }),
                                 )
                                 .await?;
@@ -212,35 +213,45 @@ pub async fn run(
     Ok(())
 }
 
-fn into_input_media(data: Vec<u8>, caption: String) -> InputMedia {
+fn into_input_media(data: Vec<u8>, caption: Option<String>) -> InputMedia {
     // Match on the first bytes to determine if it's a photo, video, or a generic document.
     match &data[..] {
         // Photo.
         [0xFF, 0xD8, 0xFF, ..] | [0x89, b'P', b'N', b'G', ..] | [0x52, 0x49, 0x46, 0x46, ..] => {
-            InputMedia::Photo(
-                InputMediaPhoto::new(InputFile::memory(data))
-                    .caption(caption)
-                    .parse_mode(ParseMode::MarkdownV2),
-            )
+            let file = InputFile::memory(data);
+
+            let mut media = InputMediaPhoto::new(file).parse_mode(ParseMode::MarkdownV2);
+            media.caption = caption;
+
+            InputMedia::Photo(media)
         }
         // Video.
-        [0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', ..] => InputMedia::Video(
-            InputMediaVideo::new(InputFile::memory(data))
-                .caption(caption)
-                .parse_mode(ParseMode::MarkdownV2),
-        ),
+        [0x00, 0x00, 0x00, 0x18, b'f', b't', b'y', b'p', ..] => {
+            let file = InputFile::memory(data);
+
+            let mut media = InputMediaVideo::new(file).parse_mode(ParseMode::MarkdownV2);
+            media.caption = caption;
+
+            InputMedia::Video(media)
+        }
         // Audio.
-        [0x49, 0x44, 0x33, 0x03, ..] | [0xFF, 0xF1, ..] | [0xFF, 0xF9, ..] => InputMedia::Audio(
-            InputMediaAudio::new(InputFile::memory(data))
-                .caption(caption)
-                .parse_mode(ParseMode::MarkdownV2),
-        ),
+        [0x49, 0x44, 0x33, 0x03, ..] | [0xFF, 0xF1, ..] | [0xFF, 0xF9, ..] => {
+            let file = InputFile::memory(data);
+
+            let mut media = InputMediaAudio::new(file).parse_mode(ParseMode::MarkdownV2);
+            media.caption = caption;
+
+            InputMedia::Audio(media)
+        }
         // Document.
-        _ => InputMedia::Document(
-            InputMediaDocument::new(InputFile::memory(data))
-                .caption(caption)
-                .parse_mode(ParseMode::MarkdownV2),
-        ),
+        _ => {
+            let file = InputFile::memory(data);
+
+            let mut media = InputMediaDocument::new(file).parse_mode(ParseMode::MarkdownV2);
+            media.caption = caption;
+
+            InputMedia::Document(media)
+        }
     }
 }
 
