@@ -2,6 +2,7 @@ use multichat_client::{MaybeTlsClient, Update, UpdateKind};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::{io, mem, slice};
 use teloxide::payloads::SendMessageSetters;
 use teloxide::prelude::Requester;
@@ -35,7 +36,7 @@ pub async fn run(
         client.join_group(*gid).await?;
     }
 
-    let mut telegram_users = HashMap::<UserId, TelegramUser>::new();
+    let mut telegram_users = HashMap::<(UserId, ChatId), TelegramUser>::new();
     let mut multichat_users = HashMap::new();
 
     let mut owned = HashSet::new();
@@ -66,7 +67,7 @@ pub async fn run(
                         }
                     };
 
-                    let entry = telegram_users.entry(event.user_id);
+                    let entry = telegram_users.entry((event.user_id, event.chat_id));
                     let user = match entry {
                         Entry::Occupied(entry) => {
                             let user = entry.into_mut();
@@ -110,7 +111,7 @@ pub async fn run(
                     }
                 }
                 EventKind::Leave => {
-                    let user = match telegram_users.remove(&event.user_id) {
+                    let user = match telegram_users.remove(&(event.user_id, event.chat_id)) {
                         Some(user) => user,
                         None => continue,
                     };
@@ -159,22 +160,45 @@ pub async fn run(
                         );
 
                         if !message.attachments.is_empty() {
-                            let mut attachments = Vec::new();
+                            let mut attachments = Vec::with_capacity(message.attachments.len());
 
                             for attachment in message.attachments {
+                                if attachment.size > 50 * 1024 * 1024 {
+                                    tracing::warn!(id = %attachment.id, "Attachment is too large, ignoring");
+                                    continue;
+                                }
+
                                 let data = client.download_attachment(attachment.id).await?;
                                 attachments.push(data);
                             }
 
-                            let mut text = Some(text);
-                            for chat_id in group_to_chat.get(&update.gid).unwrap() {
-                                bot.send_media_group(
-                                    *chat_id,
-                                    attachments.iter().map(|attachment| {
-                                        into_input_media(attachment.clone(), text.take())
-                                    }),
-                                )
-                                .await?;
+                            // Split the attachments into chunks of 10, which is the maximum allowed by Telegram.
+                            let len = attachments.len();
+                            let chat_ids = group_to_chat.get(&update.gid).unwrap();
+
+                            let mut media_group = Vec::new();
+                            for (i, attachment) in attachments.into_iter().enumerate() {
+                                let text = if media_group.is_empty() {
+                                    Some(text.clone())
+                                } else {
+                                    None
+                                };
+
+                                media_group.push(into_input_media(attachment, text));
+
+                                if media_group.len() == 10 || i == len - 1 {
+                                    for chat_id in chat_ids {
+                                        tracing::debug!(%chat_id, "Sending media group to Telegram");
+
+                                        rate_limit(|| async {
+                                            bot.send_media_group(*chat_id, media_group.clone())
+                                                .await
+                                        })
+                                        .await?;
+                                    }
+
+                                    media_group.clear();
+                                }
                             }
 
                             continue;
@@ -202,9 +226,12 @@ pub async fn run(
                 for chat_id in chat_ids {
                     tracing::debug!(%chat_id, msg = ?message, "Sending message to Telegram");
 
-                    bot.send_message(*chat_id, &message)
-                        .parse_mode(ParseMode::MarkdownV2)
-                        .await?;
+                    rate_limit(|| async {
+                        bot.send_message(*chat_id, &message)
+                            .parse_mode(ParseMode::MarkdownV2)
+                            .await
+                    })
+                    .await?;
                 }
             }
         }
@@ -251,6 +278,26 @@ fn into_input_media(data: Vec<u8>, caption: Option<String>) -> InputMedia {
             media.caption = caption;
 
             InputMedia::Document(media)
+        }
+    }
+}
+
+async fn rate_limit<T, C: Fn() -> F, F: Future<Output = Result<T, RequestError>>>(
+    c: C,
+) -> Result<T, RequestError> {
+    use tokio::time;
+
+    loop {
+        match c().await {
+            Ok(result) => return Ok(result),
+            Err(RequestError::RetryAfter(duration)) => {
+                let duration = duration.duration();
+                tracing::warn!(?duration, "Rate limited, waiting");
+
+                time::sleep(duration).await;
+                continue;
+            }
+            Err(err) => return Err(err),
         }
     }
 }
