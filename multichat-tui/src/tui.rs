@@ -106,8 +106,8 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 }
                             };
 
-                            for (_, group) in &state.groups {
-                                screen.log(Level::Info, format!("* {}", group.name));
+                            for (gid, group) in &state.groups {
+                                screen.log(Level::Info, format!("* {} ({})", group.name, gid));
                             }
                         }
                         Command::Users => {
@@ -119,12 +119,17 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 }
                             };
 
-                            for (_, group) in &state.groups {
-                                screen.log(Level::Info, format!("* {}", group.name.term_safe()));
+                            for (gid, group) in &state.groups {
+                                screen.log(
+                                    Level::Info,
+                                    format!("* {} ({})", group.name.term_safe(), gid),
+                                );
 
-                                for (_, user) in &group.users {
-                                    screen
-                                        .log(Level::Info, format!("* * {}", user.name.term_safe()));
+                                for (uid, user) in &group.users {
+                                    screen.log(
+                                        Level::Info,
+                                        format!("  * {} ({})", user.name.term_safe(), uid),
+                                    );
                                 }
                             }
                         }
