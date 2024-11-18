@@ -507,6 +507,6 @@ enum Update {
     Message {
         uid: u32,
         message: Cow<'static, str>,
-        attachments: Vec<Arc<Vec<u8>>>, // Stored as Cows to avoid copying, but they're actually always owned.
+        attachments: Vec<Arc<Vec<u8>>>,
     },
 }
