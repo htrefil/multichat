@@ -2,6 +2,18 @@
 name = "multichat-server"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["Jan Trefil <hjantrefil@gmail.com>"]
+description = "Multichat server"
+
+[package.metadata.deb]
+maintainer-scripts = "systemd/"
+systemd-units = { enable = true }
+assets = [
+    { source = "example/config.toml", dest = "usr/share/multichat/server.toml", mode = "644" },
+    { source = "example/config.toml", dest = "etc/multichat/server.toml", mode = "644" },
+    { source = "target/release/multichat-server", dest = "usr/bin/multichat-server", mode = "755" }
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

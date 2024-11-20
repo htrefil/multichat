@@ -15,18 +15,19 @@ pub enum Error {
 }
 
 pub async fn configure(certificate: &Path) -> Result<TlsConnector, Error> {
-    let certificate = fs::read(certificate).await?;
+    let certificates = fs::read(certificate).await?;
+    let certificates = rustls_pemfile::certs(&mut &*certificates).collect::<Result<Vec<_>, _>>()?;
 
     let mut store = RootCertStore::empty();
-    for certificate in rustls_pemfile::certs(&mut certificate.as_slice()) {
-        store.add(certificate?)?;
+    for certificate in certificates {
+        store.add(certificate)?;
     }
 
-    let config = Arc::new(
-        ClientConfig::builder()
-            .with_root_certificates(store)
-            .with_no_client_auth(),
-    );
+    let config = ClientConfig::builder()
+        .with_root_certificates(store)
+        .with_no_client_auth();
 
-    Ok(config.into())
+    let config = Arc::new(config);
+
+    Ok(TlsConnector::from(config))
 }

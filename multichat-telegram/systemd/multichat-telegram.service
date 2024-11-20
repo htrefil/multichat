@@ -1,0 +1,11 @@
+[Unit]
+Description=Multichat Telegram bridge
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/multichat-telegram /etc/multichat/telegram.toml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
