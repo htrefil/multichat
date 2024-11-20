@@ -74,12 +74,12 @@ async fn main() -> ExitCode {
     let mut proto_config = ProtoConfig::default();
     proto_config.max_size(512 * 1024 * 1024); // 512 MiB
 
-    let (init, client) = match ClientBuilder::maybe_tls(connector)
+    let (groups, client) = match ClientBuilder::maybe_tls(connector)
         .config(proto_config)
-        .connect(&config.multichat.server)
+        .connect(&config.multichat.server, config.multichat.access_token)
         .await
     {
-        Ok((init, client)) => (init, client),
+        Ok((groups, client)) => (groups, client),
         Err(err) => {
             tracing::error!("Error connecting to multichat: {}", err);
             return ExitCode::FAILURE;
@@ -92,7 +92,7 @@ async fn main() -> ExitCode {
     let mut group_to_chat = HashMap::new();
 
     for chat in config.chats {
-        let gid = match init.groups.get(&*chat.multichat_group) {
+        let gid = match groups.get(&*chat.multichat_group) {
             Some(gid) => *gid,
             None => {
                 tracing::error!("Multichat group {} not found", chat.multichat_group);

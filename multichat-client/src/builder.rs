@@ -1,12 +1,13 @@
 use crate::client::{Client, InitError};
 use crate::net::{Addr, BasicConnector, Connector};
 
-use multichat_proto::{Config, ServerInit, Version};
+use multichat_proto::{AccessToken, Config, Version};
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::convert::TryInto;
-use std::error;
-use std::fmt::{self, Debug, Display, Formatter};
 use std::io::Error;
 use std::num::NonZeroUsize;
+use thiserror::Error;
 use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
 use tokio_rustls::TlsConnector;
@@ -39,11 +40,12 @@ impl<T: Connector> ClientBuilder<T> {
         self
     }
 
-    /// Connects to a Multichat server identified by `addr`.
+    /// Connects to a Multichat server at the provided address.
     pub async fn connect(
         &self,
         addr: impl Addr<'_>,
-    ) -> Result<(ServerInit<'static>, Client<T::Stream>), ConnectError<T::Err>> {
+        access_token: AccessToken,
+    ) -> Result<(HashMap<Cow<'static, str>, u32>, Client<T::Stream>), ConnectError<T::Err>> {
         let incoming_buffer = self
             .incoming_buffer
             .map_err(|_| ConnectError::InvalidParameter)?
@@ -57,7 +59,7 @@ impl<T: Connector> ClientBuilder<T> {
             .await
             .map_err(ConnectError::Tls)?;
 
-        Client::from_io(incoming_buffer, stream, self.config)
+        Client::from_io(incoming_buffer, stream, self.config, access_token)
             .await
             .map_err(From::from)
     }
@@ -101,31 +103,23 @@ impl ClientBuilder<Option<TlsConnector>> {
 }
 
 /// Connection error.
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum ConnectError<T> {
-    Io(Error),
+    /// IO error.
+    #[error(transparent)]
+    Io(#[from] Error),
+    /// TLS error.
+    #[error(transparent)]
     Tls(T),
+    /// Incompatible server protocol version.
+    #[error("Incompatible server protocol version {0}")]
     ProtocolVersion(Version),
+    /// Invalid parameter was provided when building the client.
+    #[error("Invalid parameter")]
     InvalidParameter,
-}
-
-impl<T: Display> Display for ConnectError<T> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "{}", err),
-            Self::Tls(err) => write!(f, "{}", err),
-            Self::ProtocolVersion(version) => {
-                write!(f, "Incompatible server protocol version {}", version)
-            }
-            Self::InvalidParameter => write!(f, "Invalid parameter"),
-        }
-    }
-}
-
-impl<T> From<Error> for ConnectError<T> {
-    fn from(err: Error) -> Self {
-        Self::Io(err)
-    }
+    /// Authentication error, invalid access token.
+    #[error("Authentication error")]
+    Auth,
 }
 
 impl<T> From<InitError> for ConnectError<T> {
@@ -133,8 +127,7 @@ impl<T> From<InitError> for ConnectError<T> {
         match err {
             InitError::Io(err) => Self::Io(err),
             InitError::ProtocolVersion(version) => Self::ProtocolVersion(version),
+            InitError::Auth => Self::Auth,
         }
     }
 }
-
-impl<T: Display + Debug> error::Error for ConnectError<T> {}

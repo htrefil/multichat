@@ -1148,6 +1148,7 @@ name = "multichat-client"
 version = "0.1.0"
 dependencies = [
  "multichat-proto",
+ "thiserror 2.0.3",
  "tokio",
  "tokio-rustls 0.26.0",
 ]
@@ -1158,6 +1159,7 @@ version = "0.1.0"
 dependencies = [
  "rmp-serde",
  "serde",
+ "thiserror 2.0.3",
  "tokio",
 ]
 

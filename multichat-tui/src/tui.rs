@@ -3,7 +3,6 @@ use crate::screen::{Event as ScreenEvent, Level, Screen};
 use crate::term_safe::TermSafeExt;
 
 use crossterm::style::Stylize;
-use multichat_client::proto::ServerInit;
 use multichat_client::{BasicClient, BasicConnectError, ClientBuilder, Update, UpdateKind};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -70,7 +69,10 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                     };
 
                     match command {
-                        Command::Connect { server } => {
+                        Command::Connect {
+                            server,
+                            access_token,
+                        } => {
                             if connecting {
                                 screen.log(Level::Error, "Already connecting");
                                 continue;
@@ -88,7 +90,7 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 let builder = ClientBuilder::basic();
 
                                 tokio::select! {
-                                    result = builder.connect(&*server) => {
+                                    result = builder.connect(&*server, access_token) => {
                                         let _ = sender.send(result).await;
                                     }
                                     _ = sender.closed() => {}
@@ -279,11 +281,10 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                 connecting = false;
 
                 match result {
-                    Ok((init, client)) => {
+                    Ok((groups, client)) => {
                         screen.log(Level::Info, "Connected to server");
 
-                        let groups = init
-                            .groups
+                        let groups = groups
                             .into_iter()
                             .map(|(name, gid)| {
                                 (
@@ -409,7 +410,7 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
 
 enum Event {
     Screen(ScreenEvent),
-    Connect(Result<(ServerInit<'static>, BasicClient), BasicConnectError>),
+    Connect(Result<(HashMap<Cow<'static, str>, u32>, BasicClient), BasicConnectError>),
     Update(Result<Update, Error>),
 }
 

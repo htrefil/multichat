@@ -39,8 +39,14 @@ pub struct Attachment {
     pub size: u64,
 }
 
-/// Initial message sent by server, right after sending its [`Version`](crate::version::Version), to a new client.
+/// Response to an [`AuthRequest`](crate::client::AuthRequest).
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
-pub struct ServerInit<'a> {
-    pub groups: HashMap<Cow<'a, str>, u32>,
+pub enum AuthResponse<'a> {
+    /// The client has been authenticated.
+    Success {
+        /// The groups available to the client.
+        groups: HashMap<Cow<'a, str>, u32>,
+    },
+    /// The client could not be authenticated.
+    Failed,
 }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+use crate::access_token::AccessToken;
+
 /// Message sent by client to server.
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 pub enum ClientMessage<'a, 'b> {
@@ -29,4 +31,9 @@ pub enum ClientMessage<'a, 'b> {
     DownloadAttachment { id: u32 },
     /// Ignore an attachment.
     IgnoreAttachment { id: u32 },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct AuthRequest {
+    pub access_token: AccessToken,
 }

@@ -1,3 +1,4 @@
+use multichat_client::proto::AccessToken;
 use serde::Deserialize;
 use std::path::PathBuf;
 
@@ -14,8 +15,10 @@ pub struct Telegram {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct Multichat {
     pub server: String,
+    pub access_token: AccessToken,
     pub certificate: Option<PathBuf>,
 }
 

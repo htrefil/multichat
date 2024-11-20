@@ -1,4 +1,3 @@
-use rustls::ServerConfig;
 use std::convert::Infallible;
 use std::fmt::Display;
 use std::future::Future;
@@ -9,8 +8,9 @@ use thiserror::Error;
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+use tokio_rustls::rustls::{self, ServerConfig};
 use tokio_rustls::server::TlsStream;
-use tokio_rustls::{rustls, TlsAcceptor};
+use tokio_rustls::TlsAcceptor;
 
 pub trait Acceptor: Clone + Send + Sync + 'static {
     type Stream: AsyncRead + AsyncWrite + Unpin + Send;
@@ -54,17 +54,16 @@ pub enum Error {
 }
 
 pub async fn configure(certificate: &Path, key: &Path) -> Result<TlsAcceptor, Error> {
-    let certificate = fs::read(certificate).await?;
-    let certificate = rustls_pemfile::certs(&mut &*certificate).collect::<Result<_, _>>()?;
+    let certificates = fs::read(certificate).await?;
+    let certificates = rustls_pemfile::certs(&mut &*certificates).collect::<Result<_, _>>()?;
 
     let key = fs::read(key).await?;
     let key = rustls_pemfile::private_key(&mut &*key)?.ok_or(Error::NoKeys)?;
 
-    let config = rustls::ServerConfig::builder()
+    let config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certificate, key)?;
+        .with_single_cert(certificates, key)?;
 
-    let config = ServerConfig::from(config);
     let config = Arc::new(config);
 
     Ok(TlsAcceptor::from(config))

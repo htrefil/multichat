@@ -166,13 +166,16 @@ impl<'a> Addr<'a> for (&'a str, u16) {
 
 impl<'a> Addr<'a> for &'a str {
     fn server_name(self) -> Cow<'a, str> {
-        Cow::Borrowed(self)
+        self.rsplit_once(':')
+            .map(|(domain, _)| domain)
+            .unwrap_or(self)
+            .into()
     }
 }
 
 impl<'a> Addr<'a> for &'a String {
     fn server_name(self) -> Cow<'a, str> {
-        Cow::Borrowed(self)
+        self.as_str().server_name()
     }
 }
 

@@ -1,6 +1,9 @@
-use multichat_proto::{Attachment, ClientMessage, Config, ServerInit, ServerMessage, Version};
+use multichat_proto::{
+    AccessToken, Attachment, AuthRequest, AuthResponse, ClientMessage, Config, ServerMessage,
+    Version,
+};
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
 use tokio::io::{self, AsyncRead, AsyncWrite, BufReader, BufWriter, WriteHalf};
 use tokio::sync::mpsc::{self, Receiver};
@@ -19,11 +22,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         incoming_buffer: usize,
         stream: T,
         config: Config,
-    ) -> Result<(ServerInit<'static>, Self), InitError> {
+        access_token: AccessToken,
+    ) -> Result<(HashMap<Cow<'static, str>, u32>, Self), InitError> {
         let (stream_read, stream_write) = io::split(stream);
 
         let mut stream_read = BufReader::new(stream_read);
-        let stream_write = BufWriter::new(stream_write);
+        let mut stream_write = BufWriter::new(stream_write);
 
         // Read server version.
         let version = Version::read(&mut stream_read).await?;
@@ -31,8 +35,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             return Err(InitError::ProtocolVersion(version));
         }
 
-        // Read initial server data.
-        let init = config.read(&mut stream_read).await?;
+        // Write auth request.
+        config
+            .write(&mut stream_write, &AuthRequest { access_token })
+            .await?;
+
+        // Read auth response.
+        let groups = match config.read(&mut stream_read).await? {
+            AuthResponse::Success { groups } => groups,
+            AuthResponse::Failed => return Err(InitError::Auth),
+        };
 
         // Spawn reading task.
         let (sender, receiver) = mpsc::channel(incoming_buffer);
@@ -46,7 +58,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         });
 
         Ok((
-            init,
+            groups,
             Self {
                 stream_write,
                 receiver,
@@ -224,18 +236,21 @@ pub enum UpdateKind {
     Message(Message),
 }
 
+/// A message from a user.
 #[derive(Clone, Debug)]
 pub struct Message {
     /// The message text.
     pub message: String,
     /// The message attachments.
-    /// Each attachment must be either [downloaded](Client::download_attachment) or [ignored](Client::ignore_attachment).
+    /// Each attachment must be either [downloaded](Client::download_attachment) or [ignored](Client::ignore_attachment)
+    /// as soon as possible since receiving the message.
     pub attachments: Vec<Attachment>,
 }
 
 pub(crate) enum InitError {
     Io(Error),
     ProtocolVersion(Version),
+    Auth,
 }
 
 impl From<Error> for InitError {

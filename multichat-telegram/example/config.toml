@@ -3,6 +3,7 @@ token = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz12345678
 
 [multichat]
 server = "example.com:8585"
+access-token = "52f0395327987f07f805c3ac54fe38ac123303fcdb62a61fdfc9b8082195486c"
 # certificate = "example.crt"
 
 [[chats]]

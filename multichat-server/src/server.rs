@@ -1,9 +1,11 @@
 use crate::tls::Acceptor;
 
-use multichat_proto::{Attachment, ClientMessage, Config, ServerInit, ServerMessage};
+use multichat_proto::{
+    AccessToken, Attachment, AuthRequest, AuthResponse, ClientMessage, Config, ServerMessage,
+};
 use slab::Slab;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -20,6 +22,7 @@ pub async fn run(
     acceptor: impl Acceptor,
     groups: impl IntoIterator<Item = String>,
     update_buffer: Option<NonZeroUsize>,
+    access_tokens: HashSet<AccessToken>,
     config: Config,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen_addr).await?;
@@ -37,6 +40,7 @@ pub async fn run(
                 sender: broadcast::channel(update_buffer).0,
             })
             .collect(),
+        access_tokens,
     };
 
     let state = Arc::new(state);
@@ -88,7 +92,17 @@ async fn connection(
     // Intentionally bypass config write because Version does not implement Serialize.
     multichat_proto::VERSION.write(&mut stream_write).await?;
 
-    // ...and our groups.
+    // Read the client's auth request.
+    let auth_request = config.read::<AuthRequest>(&mut stream_read).await?;
+    if !state.access_tokens.contains(&auth_request.access_token) {
+        config
+            .write(&mut stream_write, &AuthResponse::Failed)
+            .await?;
+
+        return Err(Error::new(ErrorKind::Other, "Invalid access token"));
+    }
+
+    // Auth successful, send group list.
     let groups = state
         .groups
         .iter()
@@ -97,7 +111,7 @@ async fn connection(
         .collect();
 
     config
-        .write(&mut stream_write, &ServerInit { groups })
+        .write(&mut stream_write, &AuthResponse::Success { groups })
         .await?;
 
     // C2S.
@@ -459,6 +473,7 @@ async fn connection(
 
 struct State {
     update_buffer: usize,
+    access_tokens: HashSet<AccessToken>,
     groups: Vec<Group>,
 }
 

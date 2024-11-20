@@ -116,7 +116,7 @@ pub async fn write(
 mod tests {
     use super::*;
     use crate::client::ClientMessage;
-    use crate::server::{ServerInit, ServerMessage};
+    use crate::server::{AuthResponse, ServerMessage};
 
     use std::collections::HashMap;
     use std::fmt::Debug;
@@ -135,7 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn roundtrip() {
-        roundtrip_serialize(&ServerInit {
+        roundtrip_serialize(&AuthResponse::Success {
             groups: {
                 let mut groups = HashMap::new();
                 groups.insert("first".into(), 1);

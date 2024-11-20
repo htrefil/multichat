@@ -1,3 +1,4 @@
+use multichat_proto::AccessToken;
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
@@ -15,6 +16,7 @@ pub struct Config {
     #[serde(deserialize_with = "deserialize_size")]
     pub max_size: usize,
     pub groups: HashSet<String>,
+    pub access_tokens: HashSet<AccessToken>,
 }
 
 #[derive(Deserialize)]
@@ -63,4 +65,15 @@ where
     }
 
     deserializer.deserialize_str(SizeVisitor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_parses() {
+        let config = include_str!("../example/config.toml");
+        toml::from_str::<Config>(config).unwrap();
+    }
 }

@@ -1,5 +1,6 @@
 mod args;
 
+use multichat_client::proto::AccessToken;
 use std::borrow::Cow;
 use std::convert::TryFrom;
 use thiserror::Error;
@@ -8,6 +9,7 @@ use thiserror::Error;
 pub enum Command<'a> {
     Connect {
         server: Cow<'a, str>,
+        access_token: AccessToken,
     },
     Disconnect,
     Groups,
@@ -46,6 +48,11 @@ impl<'a> TryFrom<&'a str> for Command<'a> {
         let command = match &*command {
             "connect" => Command::Connect {
                 server: args.next().ok_or(Error::MissingArgument)??,
+                access_token: args
+                    .next()
+                    .ok_or(Error::MissingArgument)??
+                    .parse()
+                    .map_err(|_| Error::InvalidArgument)?,
             },
             "disconnect" => Command::Disconnect,
             "groups" => Command::Groups,

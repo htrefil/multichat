@@ -10,10 +10,12 @@
 //! use std::error::Error;
 //!
 //! async fn echo() -> Result<(), Box<dyn Error>> {
-//!     let (init, mut client) = ClientBuilder::basic().connect("127.0.0.1:8585").await?;
+//!     // This is a dummy access token for demonstration purposes.
+//!     let access_token = "52f0395327987f07f805c3ac54fe38ac123303fcdb62a61fdfc9b8082195486c".parse()?;
+//!     let (groups, mut client) = ClientBuilder::basic().connect("127.0.0.1:8585", access_token).await?;
 //!
 //!     // Find a group named "fun" and join it.
-//!     let gid = *init.groups.get("fun").ok_or("Group not found")?;
+//!     let gid = *groups.get("fun").ok_or("Group not found")?;
 //!     client.join_group(gid).await?;
 //!
 //!     // Create a new user in the group.
@@ -25,7 +27,7 @@
 //!         if update.uid != uid {
 //!             if let UpdateKind::Message(message) = update.kind {
 //!                 client
-//!                     .send_message(gid, uid, &message)
+//!                     .send_message(gid, uid, &message.message, &[])
 //!                     .await?;
 //!             }
 //!         }
@@ -42,7 +44,7 @@ mod net;
 use std::convert::Infallible;
 
 pub use builder::{ClientBuilder, ConnectError};
-pub use client::{Client, Update, UpdateKind};
+pub use client::{Client, Message, Update, UpdateKind};
 pub use multichat_proto as proto;
 pub use net::{Connector, EitherStream, Stream};
 

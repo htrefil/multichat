@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 rmp-serde = "0.15.5"
 serde = { version = "1.0.133", features = ["derive"] }
+thiserror = "2.0.3"
 tokio = { version = "1.15.0", features = ["io-util"] }
 
 [dev-dependencies]

@@ -68,6 +68,7 @@ async fn main() -> ExitCode {
                 acceptor,
                 config.groups,
                 config.update_buffer,
+                config.access_tokens,
                 proto_config,
             )
             .await
@@ -78,6 +79,7 @@ async fn main() -> ExitCode {
                 DefaultAcceptor,
                 config.groups,
                 config.update_buffer,
+                config.access_tokens,
                 proto_config,
             )
             .await
