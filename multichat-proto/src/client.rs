@@ -31,6 +31,8 @@ pub enum ClientMessage<'a, 'b> {
     DownloadAttachment { id: u32 },
     /// Ignore an attachment.
     IgnoreAttachment { id: u32 },
+    /// Reply to a ping message.
+    Pong,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]

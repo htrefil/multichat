@@ -18,7 +18,7 @@ assets = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.15.0", features = ["macros", "rt-multi-thread", "fs", "net", "sync"] }
+tokio = { version = "1.15.0", features = ["macros", "rt-multi-thread", "fs", "net", "sync", "time"] }
 toml = "0.5.8"
 serde = { version = "1.0.133", features = ["derive"] }
 tokio-rustls = "0.26.0"
@@ -28,6 +28,6 @@ tracing = "0.1.40"
 clap = { version = "4.5.20", features = ["derive"] }
 thiserror = "2.0.3"
 rustls-pemfile = "2.2.0"
+humantime = "2.1.0"
 
 multichat-proto = { path = "../multichat-proto" }
-

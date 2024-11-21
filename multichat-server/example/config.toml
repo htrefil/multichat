@@ -5,6 +5,10 @@ access-tokens = [
     "07e6a978bbed823e85e51b9702a73b5e1fe5599b01628a7cc076fadc737d071f"
 ]
 max-size = "512 MiB"
+# How often will the server check if a client is still connected. Default is 30 seconds.
+# ping-interval = "30s"
+# How long will the server wait for a client to respond to a ping. Default is 1 seconds.
+# ping-timeout = "10s"
 groups = [
     "foo",
     "bar"

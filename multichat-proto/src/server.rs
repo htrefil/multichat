@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Message sent by server to client.
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
@@ -30,6 +31,8 @@ pub enum ServerMessage<'a> {
     ConfirmClient { uid: u32 },
     /// Server sends an attachment.
     Attachment { data: Cow<'a, [u8]> },
+    /// Ping, used to keep the connection alive.
+    Ping,
 }
 
 /// Attachment to a message.
@@ -46,6 +49,8 @@ pub enum AuthResponse<'a> {
     Success {
         /// The groups available to the client.
         groups: HashMap<Cow<'a, str>, u32>,
+        ping_interval: Duration,
+        ping_timeout: Duration,
     },
     /// The client could not be authenticated.
     Failed,

@@ -6,15 +6,18 @@ use multichat_proto::{
 use slab::Slab;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::future;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{self, AsyncRead, AsyncWrite, BufReader, BufWriter};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::{mpsc, RwLock};
+use tokio::time;
 use tracing::Instrument;
 
 pub async fn run(
@@ -24,6 +27,8 @@ pub async fn run(
     update_buffer: Option<NonZeroUsize>,
     access_tokens: HashSet<AccessToken>,
     config: Config,
+    ping_timeout: Option<Duration>,
+    ping_interval: Option<Duration>,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen_addr).await?;
 
@@ -42,6 +47,9 @@ pub async fn run(
             .collect(),
         access_tokens,
     };
+
+    let ping_interval = ping_interval.unwrap_or(Duration::from_secs(30));
+    let ping_timeout = ping_timeout.unwrap_or(Duration::from_secs(5));
 
     let state = Arc::new(state);
     loop {
@@ -62,7 +70,7 @@ pub async fn run(
                     }
                 };
 
-                match connection(stream, addr, &state, config).await {
+                match connection(stream, addr, &state, config, ping_interval, ping_timeout).await {
                     Ok(_) => tracing::info!("Disconnected"),
                     Err(err) => tracing::error!("Disconnected: {}", err),
                 }
@@ -82,6 +90,8 @@ async fn connection(
     addr: SocketAddr,
     state: &State,
     config: Config,
+    ping_interval: Duration,
+    ping_timeout: Duration,
 ) -> Result<(), Error> {
     let (stream_read, stream_write) = io::split(stream);
 
@@ -111,7 +121,14 @@ async fn connection(
         .collect();
 
     config
-        .write(&mut stream_write, &AuthResponse::Success { groups })
+        .write(
+            &mut stream_write,
+            &AuthResponse::Success {
+                groups,
+                ping_interval,
+                ping_timeout,
+            },
+        )
         .await?;
 
     // C2S.
@@ -130,12 +147,24 @@ async fn connection(
 
     let mut group_handles = HashMap::new();
     let mut attachments = Slab::<Arc<Vec<u8>>>::new();
+    let mut ping_interval = time::interval(ping_interval);
+    let mut pong_interval = time::interval(ping_timeout);
+    let mut waiting_pong = false;
 
     loop {
         enum LocalUpdate {
             Client(ClientMessage<'static, 'static>),
             Group((u32, Update)),
+            Ping,
         }
+
+        let pong = async {
+            if waiting_pong {
+                pong_interval.tick().await
+            } else {
+                future::pending().await
+            }
+        };
 
         // It's not possible for the unwraps to fail unless either task panics and at that
         // point we can just bring the whole thing down.
@@ -147,287 +176,312 @@ async fn connection(
                     Err(num) => return Err(Error::new(ErrorKind::Other, format!("Skipped {} group update(s)", num))),
                 }
             }
+            _ = ping_interval.tick() => LocalUpdate::Ping,
+            _ = pong => return Err(Error::new(ErrorKind::Other, "Pong timeout")),
         };
 
         match update {
-            LocalUpdate::Client(message) => match message {
-                ClientMessage::JoinGroup { gid } => {
-                    let group = gid
-                        .try_into()
-                        .ok()
-                        .and_then(|gid: usize| state.groups.get(gid))
-                        .ok_or_else(|| {
-                            Error::new(ErrorKind::Other, "Attempted to join a nonexistent group")
-                        })?;
+            LocalUpdate::Client(message) => {
+                ping_interval.reset();
+                pong_interval.reset();
 
-                    let update_sender = update_sender.clone();
-                    let mut receiver = group.sender.subscribe();
-                    let prev = group_handles.insert(
-                        gid,
-                        tokio::spawn(async move {
-                            loop {
-                                let result = match receiver.recv().await {
-                                    Ok(update) => Ok((gid, update)),
-                                    Err(RecvError::Lagged(num)) => Err(num),
-                                    Err(RecvError::Closed) => return,
-                                };
+                waiting_pong = false;
 
-                                // The binary or is intentional, we want the result to be
-                                // sent regardless of being an error.
-                                if result.is_err() | update_sender.send(result).await.is_err() {
-                                    return;
+                match message {
+                    ClientMessage::JoinGroup { gid } => {
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| state.groups.get(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to join a nonexistent group",
+                                )
+                            })?;
+
+                        let update_sender = update_sender.clone();
+                        let mut receiver = group.sender.subscribe();
+                        let prev = group_handles.insert(
+                            gid,
+                            tokio::spawn(async move {
+                                loop {
+                                    let result = match receiver.recv().await {
+                                        Ok(update) => Ok((gid, update)),
+                                        Err(RecvError::Lagged(num)) => Err(num),
+                                        Err(RecvError::Closed) => return,
+                                    };
+
+                                    // The binary or is intentional, we want the result to be
+                                    // sent regardless of being an error.
+                                    if result.is_err() | update_sender.send(result).await.is_err() {
+                                        return;
+                                    }
                                 }
-                            }
-                        }),
-                    );
+                            }),
+                        );
 
-                    if prev.is_some() {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            "Attempted to join a group twice",
-                        ));
+                        if prev.is_some() {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to join a group twice",
+                            ));
+                        }
+
+                        for (uid, user) in &*group.users.read().await {
+                            // XXX: Perhaps it would be wise to write the message
+                            //      while the user list is not locked.
+                            config
+                                .write(
+                                    &mut stream_write,
+                                    &ServerMessage::InitUser {
+                                        gid,
+                                        uid: uid.try_into().unwrap(),
+                                        name: user.name.as_str().into(),
+                                    },
+                                )
+                                .await?;
+                        }
+
+                        tracing::debug!(%gid, "Join group");
                     }
+                    ClientMessage::LeaveGroup { gid } => {
+                        gid.try_into()
+                            .ok()
+                            .and_then(|gid: usize| state.groups.get(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to leave a nonexistent group",
+                                )
+                            })?
+                            .cleanup_users(addr)
+                            .await;
 
-                    for (uid, user) in &*group.users.read().await {
-                        // XXX: Perhaps it would be wise to write the message
-                        //      while the user list is not locked.
+                        group_handles
+                            .remove(&gid)
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to leave a non-joined group",
+                                )
+                            })?
+                            .abort();
+
+                        tracing::debug!(%gid, "Leave group");
+                    }
+                    ClientMessage::JoinUser { gid, name } => {
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| state.groups.get(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to join a user to a nonexistent group",
+                                )
+                            })?;
+
+                        let uid = group
+                            .users
+                            .write()
+                            .await
+                            .insert(User {
+                                name: name.clone().into(),
+                                owner: addr,
+                            })
+                            .try_into()
+                            .unwrap();
+
+                        // Notify our client.
+                        config
+                            .write(&mut stream_write, &ServerMessage::ConfirmClient { uid })
+                            .await?;
+
+                        // Notify our group.
+                        let _ = group.sender.send(Update::Join {
+                            uid,
+                            name: name.clone().into(),
+                        });
+
+                        tracing::debug!(%gid, ?name, %uid, "Join user");
+                    }
+                    ClientMessage::LeaveUser { gid, uid } => {
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| state.groups.get(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to remove a user from a nonexistent group",
+                                )
+                            })?;
+
+                        let mut users = group.users.write().await;
+
+                        let err = || {
+                            Error::new(ErrorKind::Other, "Attempted to remove a nonexistent user")
+                        };
+
+                        let uid = uid.try_into().map_err(|_| err())?;
+                        let user = users.get(uid).ok_or_else(err)?;
+
+                        if user.owner != addr {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to remove a non owned user",
+                            ));
+                        }
+
+                        users.remove(uid);
+
+                        // Notify our group.
+                        let _ = group.sender.send(Update::Leave {
+                            uid: uid.try_into().unwrap(),
+                        });
+
+                        tracing::debug!(%gid, %uid, "Leave user");
+                    }
+                    ClientMessage::SendMessage {
+                        gid,
+                        uid,
+                        message,
+                        attachments,
+                    } => {
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| state.groups.get(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to send a message to a nonexistent group",
+                                )
+                            })?;
+
+                        let err = || {
+                            Error::new(
+                                ErrorKind::Other,
+                                "Attempted to send a message as a nonexistent user",
+                            )
+                        };
+
+                        let users = group.users.read().await;
+
+                        let uid = uid.try_into().map_err(|_| err())?;
+                        let user = users.get(uid).ok_or_else(err)?;
+
+                        if user.owner != addr {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to send a message as a non owned user",
+                            ));
+                        }
+
+                        drop(users);
+
+                        let message_clone = message.clone();
+
+                        // Notify our group.
+                        let _ = group.sender.send(Update::Message {
+                            uid: uid.try_into().unwrap(),
+                            message: message.into_owned().into(),
+                            attachments: attachments
+                                .into_owned() // Already owned.
+                                .into_iter()
+                                .map(Cow::into_owned) // Already owned.
+                                .map(Arc::new)
+                                .collect(),
+                        });
+
+                        tracing::debug!(%gid, %uid, message = ?message_clone, "Send message");
+                    }
+                    ClientMessage::RenameUser { gid, uid, name } => {
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| state.groups.get(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to rename a user from a nonexistent group",
+                                )
+                            })?;
+
+                        let mut users = group.users.write().await;
+
+                        let user = uid
+                            .try_into()
+                            .ok()
+                            .and_then(|uid: usize| users.get_mut(uid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to rename a nonexistent user",
+                                )
+                            })?;
+
+                        if user.owner != addr {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to rename a non owned user",
+                            ));
+                        }
+
+                        user.name = name.clone().into();
+
+                        // Notify our group.
+                        let _ = group.sender.send(Update::Rename {
+                            uid,
+                            name: name.clone().into(),
+                        });
+
+                        tracing::debug!(%gid, %uid, ?name, "Rename");
+                    }
+                    ClientMessage::DownloadAttachment { id } => {
+                        let attachment = id
+                            .try_into()
+                            .ok()
+                            .and_then(|id: usize| attachments.try_remove(id))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to download a nonexistent attachment",
+                                )
+                            })?;
+
                         config
                             .write(
                                 &mut stream_write,
-                                &ServerMessage::InitUser {
-                                    gid,
-                                    uid: uid.try_into().unwrap(),
-                                    name: user.name.as_str().into(),
+                                &ServerMessage::Attachment {
+                                    data: attachment.as_slice().into(),
                                 },
                             )
                             .await?;
+
+                        tracing::debug!(%id, "Download attachment");
                     }
+                    ClientMessage::IgnoreAttachment { id } => {
+                        let _ = id
+                            .try_into()
+                            .ok()
+                            .and_then(|id: usize| attachments.try_remove(id))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to ignore a nonexistent attachment",
+                                )
+                            })?;
 
-                    tracing::debug!(%gid, "Join group");
-                }
-                ClientMessage::LeaveGroup { gid } => {
-                    gid.try_into()
-                        .ok()
-                        .and_then(|gid: usize| state.groups.get(gid))
-                        .ok_or_else(|| {
-                            Error::new(ErrorKind::Other, "Attempted to leave a nonexistent group")
-                        })?
-                        .cleanup_users(addr)
-                        .await;
-
-                    group_handles
-                        .remove(&gid)
-                        .ok_or_else(|| {
-                            Error::new(ErrorKind::Other, "Attempted to leave a non-joined group")
-                        })?
-                        .abort();
-
-                    tracing::debug!(%gid, "Leave group");
-                }
-                ClientMessage::JoinUser { gid, name } => {
-                    let group = gid
-                        .try_into()
-                        .ok()
-                        .and_then(|gid: usize| state.groups.get(gid))
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Other,
-                                "Attempted to join a user to a nonexistent group",
-                            )
-                        })?;
-
-                    let uid = group
-                        .users
-                        .write()
-                        .await
-                        .insert(User {
-                            name: name.clone().into(),
-                            owner: addr,
-                        })
-                        .try_into()
-                        .unwrap();
-
-                    // Notify our client.
-                    config
-                        .write(&mut stream_write, &ServerMessage::ConfirmClient { uid })
-                        .await?;
-
-                    // Notify our group.
-                    let _ = group.sender.send(Update::Join {
-                        uid,
-                        name: name.clone().into(),
-                    });
-
-                    tracing::debug!(%gid, ?name, %uid, "Join user");
-                }
-                ClientMessage::LeaveUser { gid, uid } => {
-                    let group = gid
-                        .try_into()
-                        .ok()
-                        .and_then(|gid: usize| state.groups.get(gid))
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Other,
-                                "Attempted to remove a user from a nonexistent group",
-                            )
-                        })?;
-
-                    let mut users = group.users.write().await;
-
-                    let err =
-                        || Error::new(ErrorKind::Other, "Attempted to remove a nonexistent user");
-
-                    let uid = uid.try_into().map_err(|_| err())?;
-                    let user = users.get(uid).ok_or_else(err)?;
-
-                    if user.owner != addr {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            "Attempted to remove a non owned user",
-                        ));
+                        tracing::debug!(%id, "Ignore attachment");
                     }
-
-                    users.remove(uid);
-
-                    // Notify our group.
-                    let _ = group.sender.send(Update::Leave {
-                        uid: uid.try_into().unwrap(),
-                    });
-
-                    tracing::debug!(%gid, %uid, "Leave user");
+                    ClientMessage::Pong => tracing::debug!("Pong"),
                 }
-                ClientMessage::SendMessage {
-                    gid,
-                    uid,
-                    message,
-                    attachments,
-                } => {
-                    let group = gid
-                        .try_into()
-                        .ok()
-                        .and_then(|gid: usize| state.groups.get(gid))
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Other,
-                                "Attempted to send a message to a nonexistent group",
-                            )
-                        })?;
-
-                    let err = || {
-                        Error::new(
-                            ErrorKind::Other,
-                            "Attempted to send a message as a nonexistent user",
-                        )
-                    };
-
-                    let users = group.users.read().await;
-
-                    let uid = uid.try_into().map_err(|_| err())?;
-                    let user = users.get(uid).ok_or_else(err)?;
-
-                    if user.owner != addr {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            "Attempted to send a message as a non owned user",
-                        ));
-                    }
-
-                    drop(users);
-
-                    let message_clone = message.clone();
-
-                    // Notify our group.
-                    let _ = group.sender.send(Update::Message {
-                        uid: uid.try_into().unwrap(),
-                        message: message.into_owned().into(),
-                        attachments: attachments
-                            .into_owned() // Already owned.
-                            .into_iter()
-                            .map(Cow::into_owned) // Already owned.
-                            .map(Arc::new)
-                            .collect(),
-                    });
-
-                    tracing::debug!(%gid, %uid, message = ?message_clone, "Send message");
-                }
-                ClientMessage::RenameUser { gid, uid, name } => {
-                    let group = gid
-                        .try_into()
-                        .ok()
-                        .and_then(|gid: usize| state.groups.get(gid))
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Other,
-                                "Attempted to rename a user from a nonexistent group",
-                            )
-                        })?;
-
-                    let mut users = group.users.write().await;
-
-                    let user = uid
-                        .try_into()
-                        .ok()
-                        .and_then(|uid: usize| users.get_mut(uid))
-                        .ok_or_else(|| {
-                            Error::new(ErrorKind::Other, "Attempted to rename a nonexistent user")
-                        })?;
-
-                    if user.owner != addr {
-                        return Err(Error::new(
-                            ErrorKind::Other,
-                            "Attempted to rename a non owned user",
-                        ));
-                    }
-
-                    user.name = name.clone().into();
-
-                    // Notify our group.
-                    let _ = group.sender.send(Update::Rename {
-                        uid,
-                        name: name.clone().into(),
-                    });
-
-                    tracing::debug!(%gid, %uid, ?name, "Rename");
-                }
-                ClientMessage::DownloadAttachment { id } => {
-                    let attachment = id
-                        .try_into()
-                        .ok()
-                        .and_then(|id: usize| attachments.try_remove(id))
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Other,
-                                "Attempted to download a nonexistent attachment",
-                            )
-                        })?;
-
-                    config
-                        .write(
-                            &mut stream_write,
-                            &ServerMessage::Attachment {
-                                data: attachment.as_slice().into(),
-                            },
-                        )
-                        .await?;
-
-                    tracing::debug!(%id, "Download attachment");
-                }
-                ClientMessage::IgnoreAttachment { id } => {
-                    let _ = id
-                        .try_into()
-                        .ok()
-                        .and_then(|id: usize| attachments.try_remove(id))
-                        .ok_or_else(|| {
-                            Error::new(
-                                ErrorKind::Other,
-                                "Attempted to ignore a nonexistent attachment",
-                            )
-                        })?;
-
-                    tracing::debug!(%id, "Ignore attachment");
-                }
-            },
+            }
             LocalUpdate::Group((gid, update)) => {
+                ping_interval.reset();
+
                 let message = match update {
                     Update::Join { uid, name } => ServerMessage::InitUser {
                         gid,
@@ -466,6 +520,18 @@ async fn connection(
                 };
 
                 config.write(&mut stream_write, &message).await?;
+            }
+            LocalUpdate::Ping => {
+                tracing::debug!("Sending ping");
+
+                config
+                    .write(&mut stream_write, &ServerMessage::Ping)
+                    .await?;
+
+                ping_interval.reset();
+                pong_interval.reset();
+
+                waiting_pong = true;
             }
         }
     }

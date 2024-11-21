@@ -6,6 +6,8 @@ use std::fmt::{self, Formatter};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -15,6 +17,10 @@ pub struct Config {
     pub update_buffer: Option<NonZeroUsize>,
     #[serde(deserialize_with = "deserialize_size")]
     pub max_size: usize,
+    #[serde(default, deserialize_with = "deserialize_duration")]
+    pub ping_interval: Option<Duration>,
+    #[serde(default, deserialize_with = "deserialize_duration")]
+    pub ping_timeout: Option<Duration>,
     pub groups: HashSet<String>,
     pub access_tokens: HashSet<AccessToken>,
 }
@@ -65,6 +71,40 @@ where
     }
 
     deserializer.deserialize_str(SizeVisitor)
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct DurationVisitor;
+
+    impl Visitor<'_> for DurationVisitor {
+        type Value = Option<Duration>;
+
+        fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {
+            write!(formatter, "a duration of time")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            humantime::Duration::from_str(v)
+                .map_err(E::custom)
+                .map(Into::into)
+                .map(Some)
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_str(DurationVisitor)
 }
 
 #[cfg(test)]

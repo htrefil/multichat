@@ -70,6 +70,8 @@ async fn main() -> ExitCode {
                 config.update_buffer,
                 config.access_tokens,
                 proto_config,
+                config.ping_interval,
+                config.ping_timeout,
             )
             .await
         }
@@ -81,6 +83,8 @@ async fn main() -> ExitCode {
                 config.update_buffer,
                 config.access_tokens,
                 proto_config,
+                config.ping_interval,
+                config.ping_timeout,
             )
             .await
         }

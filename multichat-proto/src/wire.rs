@@ -120,6 +120,7 @@ mod tests {
 
     use std::collections::HashMap;
     use std::fmt::Debug;
+    use std::time::Duration;
 
     async fn roundtrip_serialize<T: DeserializeOwned + Serialize + Debug + Eq>(item: &T) {
         let mut buffer = Vec::new();
@@ -143,6 +144,8 @@ mod tests {
 
                 groups
             },
+            ping_interval: Duration::from_secs(10),
+            ping_timeout: Duration::from_secs(5),
         })
         .await;
 

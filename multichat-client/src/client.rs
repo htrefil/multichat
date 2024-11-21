@@ -7,6 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Error, ErrorKind};
 use tokio::io::{self, AsyncRead, AsyncWrite, BufReader, BufWriter, WriteHalf};
 use tokio::sync::mpsc::{self, Receiver};
+use tokio::time;
 
 /// A client object representing a connection to a Multichat server.
 pub struct Client<T> {
@@ -41,16 +42,26 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             .await?;
 
         // Read auth response.
-        let groups = match config.read(&mut stream_read).await? {
-            AuthResponse::Success { groups } => groups,
+        let (groups, ping_interval, ping_timeout) = match config.read(&mut stream_read).await? {
+            AuthResponse::Success {
+                groups,
+                ping_interval,
+                ping_timeout,
+            } => (groups, ping_interval, ping_timeout),
             AuthResponse::Failed => return Err(InitError::Auth),
         };
 
         // Spawn reading task.
         let (sender, receiver) = mpsc::channel(incoming_buffer);
         tokio::spawn(async move {
+            let timeout = ping_interval + ping_timeout;
+
             loop {
-                let result = config.read(&mut stream_read).await;
+                let result = tokio::select! {
+                    result = config.read(&mut stream_read) => result,
+                    _ = time::sleep(timeout) => Err(Error::new(ErrorKind::TimedOut, "Ping timeout")),
+                };
+
                 if result.is_err() | sender.send(result).await.is_err() {
                     return;
                 }
@@ -102,6 +113,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             match translate_message(message) {
                 Ok(update) => self.updates.push_back(update),
                 Err(Reply::ConfirmClient(uid)) => return Ok(uid),
+                Err(Reply::Ping) => continue,
                 Err(_) => return Err(Error::new(ErrorKind::InvalidData, "Unexpected message")),
             }
         }
@@ -180,6 +192,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             match translate_message(message) {
                 Ok(update) => self.updates.push_back(update),
                 Err(Reply::Attachment(data)) => return Ok(data),
+                Err(Reply::Ping) => continue,
                 Err(_) => return Err(Error::new(ErrorKind::InvalidData, "Unexpected message")),
             }
         }
@@ -207,9 +220,20 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             return Ok(update);
         }
 
-        let message = self.receiver.recv().await.ok_or(ErrorKind::BrokenPipe)??;
-        translate_message(message)
-            .map_err(|_| Error::new(ErrorKind::InvalidData, "Unexpected message"))
+        loop {
+            let message = self.receiver.recv().await.ok_or(ErrorKind::BrokenPipe)??;
+            match translate_message(message) {
+                Ok(update) => return Ok(update),
+                Err(Reply::Ping) => {
+                    self.config
+                        .write(&mut self.stream_write, &ClientMessage::Pong)
+                        .await?;
+
+                    continue;
+                }
+                Err(_) => return Err(Error::new(ErrorKind::InvalidData, "Unexpected message")),
+            }
+        }
     }
 }
 
@@ -262,6 +286,7 @@ impl From<Error> for InitError {
 enum Reply {
     Attachment(Vec<u8>),
     ConfirmClient(u32),
+    Ping,
 }
 
 fn translate_message(message: ServerMessage<'static>) -> Result<Update, Reply> {
@@ -296,5 +321,6 @@ fn translate_message(message: ServerMessage<'static>) -> Result<Update, Reply> {
         }),
         ServerMessage::ConfirmClient { uid } => Err(Reply::ConfirmClient(uid)),
         ServerMessage::Attachment { data } => Err(Reply::Attachment(data.into_owned())),
+        ServerMessage::Ping => Err(Reply::Ping),
     }
 }
