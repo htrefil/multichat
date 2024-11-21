@@ -2,6 +2,7 @@
 name = "multichat-telegram"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 authors = ["Jan Trefil <hjantrefil@gmail.com>"]
 description = "Multichat Telegram bridge"
 
