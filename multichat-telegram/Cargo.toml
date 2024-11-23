@@ -16,6 +16,8 @@ assets = [
 ]
 
 [dependencies]
+multichat-client = { path = "../multichat-client" }
+
 clap = { version = "4.5.20", features = ["derive"] }
 serde = { version = "1.0.214", features = ["derive"] }
 teloxide = { version = "0.13.0", default-features = false, features = ["rustls", "ctrlc_handler"] }
@@ -27,5 +29,3 @@ thiserror = "2.0.3"
 rustls = "0.23.16"
 rustls-pemfile = "2.2.0"
 tokio-rustls = "0.26.0"
-
-multichat-client = { path = "../multichat-client" }
