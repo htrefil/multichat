@@ -64,7 +64,11 @@ impl<'de> Deserialize<'de> for AccessToken {
             }
         }
 
-        deserializer.deserialize_str(AccessTokenVisitor)
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(AccessTokenVisitor)
+        } else {
+            deserializer.deserialize_bytes(AccessTokenVisitor)
+        }
     }
 }
 
