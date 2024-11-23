@@ -104,6 +104,10 @@ fn outgoing_limit() -> Error {
     Error::new(ErrorKind::InvalidInput, "Outgoing data size exceeded limit")
 }
 
+fn options() -> impl Options {
+    DefaultOptions::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,8 +203,4 @@ mod tests {
 
         assert_eq!(result.is_err(), true);
     }
-}
-
-fn options() -> impl Options {
-    DefaultOptions::new()
 }
