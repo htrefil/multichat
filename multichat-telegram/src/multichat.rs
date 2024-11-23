@@ -122,7 +122,7 @@ pub async fn run(
                 }
             },
             Event::Multichat(update) => {
-                let message = match update.kind {
+                let (message, silent) = match update.kind {
                     UpdateKind::Join(name) => {
                         let owned = owned.remove(&(update.gid, update.uid));
                         let user = multichat_users
@@ -133,7 +133,7 @@ pub async fn run(
                             continue;
                         }
 
-                        format!("*{}*: joined", user.name.markdown_safe())
+                        (format!("*{}*: joined", user.name.markdown_safe()), true)
                     }
                     UpdateKind::Leave => {
                         let user = multichat_users.remove(&(update.gid, update.uid)).unwrap();
@@ -141,7 +141,7 @@ pub async fn run(
                             continue;
                         }
 
-                        format!("*{}*: left", user.name.markdown_safe())
+                        (format!("*{}*: left", user.name.markdown_safe()), true)
                     }
                     UpdateKind::Message(message) => {
                         let user = multichat_users.get(&(update.gid, update.uid)).unwrap();
@@ -204,7 +204,7 @@ pub async fn run(
                             continue;
                         }
 
-                        text
+                        (text, false)
                     }
                     UpdateKind::Rename(new_name) => {
                         let user = multichat_users.get_mut(&(update.gid, update.uid)).unwrap();
@@ -214,10 +214,13 @@ pub async fn run(
                             continue;
                         }
 
-                        format!(
-                            "*{}*: renamed to *{}*",
-                            old_name.markdown_safe(),
-                            new_name.markdown_safe()
+                        (
+                            format!(
+                                "*{}*: renamed to *{}*",
+                                old_name.markdown_safe(),
+                                new_name.markdown_safe()
+                            ),
+                            true,
                         )
                     }
                 };
@@ -229,6 +232,7 @@ pub async fn run(
                     rate_limit(|| async {
                         bot.send_message(*chat_id, &message)
                             .parse_mode(ParseMode::MarkdownV2)
+                            .disable_notification(silent)
                             .await
                     })
                     .await?;
