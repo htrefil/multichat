@@ -1,4 +1,4 @@
-use rmp_serde::decode::Error as RmpError;
+use bincode::{DefaultOptions, Options};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::io::{Error, ErrorKind};
@@ -27,28 +27,18 @@ impl Config {
         &self,
         stream: &mut (impl AsyncRead + Unpin),
     ) -> Result<T, Error> {
-        let mut buffer = Vec::new();
-        loop {
-            let chunk_length = stream.read_u8().await? as usize;
-            if buffer.len() + chunk_length > self.max_size {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    "Data size exceeded limit",
-                ));
-            }
+        let length = stream.read_u32().await?;
+        let length = length.try_into().map_err(|_| incoming_limit())?;
 
-            let mut chunk_buffer = [0; 0xFF];
-            stream.read_exact(&mut chunk_buffer[..chunk_length]).await?;
-
-            buffer.extend_from_slice(&chunk_buffer);
-
-            if chunk_length < 0xFF {
-                break;
-            }
+        if length > self.max_size {
+            return Err(incoming_limit());
         }
 
-        rmp_serde::from_read(&*buffer).map_err(|err| match err {
-            RmpError::InvalidMarkerRead(err) | RmpError::InvalidDataRead(err) => err,
+        let mut buffer = vec![0; length];
+        stream.read_exact(&mut buffer).await?;
+
+        options().deserialize(&*buffer).map_err(|err| match *err {
+            bincode::ErrorKind::Io(err) => err,
             err => Error::new(ErrorKind::InvalidData, err),
         })
     }
@@ -64,24 +54,18 @@ impl Config {
         stream: &mut (impl AsyncWrite + Unpin),
         data: &impl Serialize,
     ) -> Result<(), Error> {
-        let data =
-            rmp_serde::to_vec(data).map_err(|err| Error::new(ErrorKind::InvalidInput, err))?;
+        let data = options().serialize(data).map_err(|err| match *err {
+            bincode::ErrorKind::Io(err) => err,
+            err => Error::new(ErrorKind::InvalidData, err),
+        })?;
+
         if data.len() > self.max_size {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "Data size exceeded limit",
-            ));
+            return Err(outgoing_limit());
         }
 
-        for chunk in data.chunks(0xFF) {
-            stream.write_u8(chunk.len() as u8).await?;
-            stream.write_all(chunk).await?;
-        }
-
-        // Last chunk length 0xFF, so send a 0 length to indicate end of message.
-        if data.len() % 0xFF == 0 {
-            stream.write_u8(0).await?;
-        }
+        let length = data.len().try_into().map_err(|_| outgoing_limit())?;
+        stream.write_u32(length).await?;
+        stream.write_all(&data).await?;
 
         stream.flush().await?;
 
@@ -110,6 +94,14 @@ pub async fn write(
     data: &impl Serialize,
 ) -> Result<(), Error> {
     Config::default().write(stream, data).await
+}
+
+fn incoming_limit() -> Error {
+    Error::new(ErrorKind::InvalidInput, "Incoming data size exceeded limit")
+}
+
+fn outgoing_limit() -> Error {
+    Error::new(ErrorKind::InvalidInput, "Outgoing data size exceeded limit")
 }
 
 #[cfg(test)]
@@ -207,4 +199,8 @@ mod tests {
 
         assert_eq!(result.is_err(), true);
     }
+}
+
+fn options() -> impl Options {
+    DefaultOptions::new()
 }
