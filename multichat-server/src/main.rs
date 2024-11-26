@@ -66,7 +66,6 @@ async fn main() -> ExitCode {
             server::run(
                 config.listen,
                 acceptor,
-                config.groups,
                 config.update_buffer,
                 config.access_tokens,
                 proto_config,
@@ -79,7 +78,6 @@ async fn main() -> ExitCode {
             server::run(
                 config.listen,
                 DefaultAcceptor,
-                config.groups,
                 config.update_buffer,
                 config.access_tokens,
                 proto_config,

@@ -32,10 +32,6 @@ pub async fn run(
     group_to_chat: &HashMap<u32, HashSet<ChatId>>,
     mut receiver: Receiver<TelegramEvent>,
 ) -> Result<(), Error> {
-    for (gid, _) in group_to_chat {
-        client.join_group(*gid).await?;
-    }
-
     let mut telegram_users = HashMap::<(UserId, ChatId), TelegramUser>::new();
     let mut multichat_users = HashMap::new();
 
@@ -85,7 +81,7 @@ pub async fn run(
                             let mut gid_uid = Vec::new();
 
                             for gid in gids {
-                                let uid = client.join_user(*gid, &user_name).await?;
+                                let uid = client.init_user(*gid, &user_name).await?;
 
                                 gid_uid.push((*gid, uid));
                                 owned.insert((*gid, uid));
@@ -117,16 +113,16 @@ pub async fn run(
                     };
 
                     for (gid, uid) in user.gid_uid {
-                        client.leave_user(gid, uid).await?;
+                        client.destroy_user(gid, uid).await?;
                     }
                 }
             },
             Event::Multichat(update) => {
                 let (message, silent) = match update.kind {
-                    UpdateKind::Join(name) => {
-                        let owned = owned.remove(&(update.gid, update.uid));
+                    UpdateKind::InitUser { uid, name } => {
+                        let owned = owned.remove(&(update.gid, uid));
                         let user = multichat_users
-                            .entry((update.gid, update.uid))
+                            .entry((update.gid, uid))
                             .or_insert(MultichatUser { name, owned });
 
                         if user.owned {
@@ -135,16 +131,16 @@ pub async fn run(
 
                         (format!("*{}*: joined", user.name.markdown_safe()), true)
                     }
-                    UpdateKind::Leave => {
-                        let user = multichat_users.remove(&(update.gid, update.uid)).unwrap();
+                    UpdateKind::DestroyUser { uid } => {
+                        let user = multichat_users.remove(&(update.gid, uid)).unwrap();
                         if user.owned {
                             continue;
                         }
 
                         (format!("*{}*: left", user.name.markdown_safe()), true)
                     }
-                    UpdateKind::Message(message) => {
-                        let user = multichat_users.get(&(update.gid, update.uid)).unwrap();
+                    UpdateKind::Message { uid, message } => {
+                        let user = multichat_users.get(&(update.gid, uid)).unwrap();
                         if user.owned {
                             for attachment in message.attachments {
                                 client.ignore_attachment(attachment.id).await?;
@@ -156,7 +152,7 @@ pub async fn run(
                         let text = format!(
                             "*{}*: {}",
                             user.name.markdown_safe(),
-                            message.message.markdown_safe()
+                            message.text.markdown_safe()
                         );
 
                         if !message.attachments.is_empty() {
@@ -206,8 +202,11 @@ pub async fn run(
 
                         (text, false)
                     }
-                    UpdateKind::Rename(new_name) => {
-                        let user = multichat_users.get_mut(&(update.gid, update.uid)).unwrap();
+                    UpdateKind::Rename {
+                        uid,
+                        name: new_name,
+                    } => {
+                        let user = multichat_users.get_mut(&(update.gid, uid)).unwrap();
                         let old_name = mem::replace(&mut user.name, new_name.clone());
 
                         if user.owned {
@@ -223,6 +222,7 @@ pub async fn run(
                             true,
                         )
                     }
+                    UpdateKind::InitGroup { .. } | UpdateKind::DestroyGroup { .. } => continue,
                 };
 
                 let chat_ids = group_to_chat.get(&update.gid).unwrap();

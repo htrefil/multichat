@@ -3,9 +3,9 @@ use crate::screen::{Event as ScreenEvent, Level, Screen};
 use crate::term_safe::TermSafeExt;
 
 use crossterm::style::Stylize;
+use multichat_client::proto::Version;
 use multichat_client::{BasicClient, BasicConnectError, ClientBuilder, Update, UpdateKind};
-use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::convert::TryFrom;
 use std::io::Error;
 use std::{future, mem};
@@ -17,7 +17,7 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
         format!(
             "Multichat TUI v{}, using protocol v{}",
             env!("CARGO_PKG_VERSION"),
-            multichat_client::proto::VERSION
+            Version::CURRENT
         ),
     );
 
@@ -152,13 +152,25 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 match state.groups.iter_mut().find(|(_, g)| group == g.name) {
                                     Some((gid, group)) => (*gid, group),
                                     None => {
-                                        screen.log(Level::Error, "Unknown group");
-                                        continue;
+                                        let gid = state.client.join_group(&group).await?;
+                                        let group = state.groups.entry(gid).or_insert(Group {
+                                            name: group.into_owned(),
+                                            users: BTreeMap::new(),
+                                            owned: HashSet::new(),
+                                            joined: true,
+                                        });
+
+                                        screen.log(
+                                            Level::Info,
+                                            format!("Joined group {}", group.name.term_safe()),
+                                        );
+
+                                        (gid, group)
                                     }
                                 };
 
                             if !group.joined {
-                                state.client.join_group(gid).await?;
+                                state.client.join_group(&group.name).await?;
                                 group.joined = true;
 
                                 screen.log(
@@ -168,7 +180,7 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                             }
 
                             if let Some(user) = user {
-                                let uid = state.client.join_user(gid, &*user).await?;
+                                let uid = state.client.init_user(gid, &*user).await?;
                                 group.owned.insert(uid);
                             }
                         }
@@ -204,7 +216,7 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                     continue;
                                 }
 
-                                state.client.leave_user(gid, uid).await?;
+                                state.client.destroy_user(gid, uid).await?;
                             }
                         }
                         Command::Rename { group, uid, name } => {
@@ -281,26 +293,11 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                 connecting = false;
 
                 match result {
-                    Ok((groups, client)) => {
+                    Ok(client) => {
                         screen.log(Level::Info, "Connected to server");
 
-                        let groups = groups
-                            .into_iter()
-                            .map(|(name, gid)| {
-                                (
-                                    gid,
-                                    Group {
-                                        name,
-                                        users: HashMap::new(),
-                                        joined: false,
-                                        owned: HashSet::new(),
-                                    },
-                                )
-                            })
-                            .collect();
-
                         state = Some(State {
-                            groups,
+                            groups: BTreeMap::new(),
                             client,
                             current: None,
                         });
@@ -321,29 +318,49 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                 };
 
                 let state = state.as_mut().unwrap();
-                let group = state.groups.get_mut(&update.gid).unwrap();
 
                 match update.kind {
-                    UpdateKind::Join(name) => {
+                    UpdateKind::InitGroup { name } => {
+                        let group = state.groups.entry(update.gid).or_insert(Group {
+                            name,
+                            users: BTreeMap::new(),
+                            owned: HashSet::new(),
+                            joined: false,
+                        });
+
+                        screen.log(Level::Info, format!("[{}] created", group.name.term_safe()));
+                    }
+                    UpdateKind::DestroyGroup => {
+                        let group = state.groups.remove(&update.gid).unwrap();
+
+                        screen.log(
+                            Level::Info,
+                            format!("[{}] destroyed", group.name.term_safe()),
+                        );
+                    }
+                    UpdateKind::InitUser { uid, name } => {
+                        let group = state.groups.get_mut(&update.gid).unwrap();
+
                         screen.log(
                             Level::Info,
                             format!(
                                 "[{}] {} ({}): joined",
                                 group.name.term_safe(),
                                 name.term_safe().bold(),
-                                update.uid
+                                uid,
                             ),
                         );
 
-                        let owned = group.owned.remove(&update.uid);
+                        let owned = group.owned.remove(&uid);
                         if owned && state.current.is_none() {
-                            state.current = Some((update.gid, update.uid));
+                            state.current = Some((update.gid, uid));
                         }
 
-                        group.users.insert(update.uid, User { name, owned });
+                        group.users.insert(uid, User { name, owned });
                     }
-                    UpdateKind::Leave => {
-                        let name = group.users.remove(&update.uid).unwrap().name;
+                    UpdateKind::DestroyUser { uid } => {
+                        let group = state.groups.get_mut(&update.gid).unwrap();
+                        let name = group.users.remove(&uid).unwrap().name;
 
                         screen.log(
                             Level::Info,
@@ -351,13 +368,14 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 "[{}] {} ({}): left",
                                 group.name.term_safe(),
                                 name.term_safe().bold(),
-                                update.uid
+                                uid
                             ),
                         );
                     }
-                    UpdateKind::Rename(name) => {
+                    UpdateKind::Rename { uid, name } => {
+                        let group = state.groups.get_mut(&update.gid).unwrap();
                         let old_name = mem::replace(
-                            &mut group.users.get_mut(&update.uid).unwrap().name,
+                            &mut group.users.get_mut(&uid).unwrap().name,
                             name.clone(),
                         );
 
@@ -367,13 +385,14 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 "[{}] {} ({}): renamed to {}",
                                 group.name.term_safe(),
                                 old_name.term_safe().bold(),
-                                update.uid,
+                                uid,
                                 name.term_safe().bold()
                             ),
                         );
                     }
-                    UpdateKind::Message(message) => {
-                        let user = &group.users.get(&update.uid).unwrap().name;
+                    UpdateKind::Message { uid, message } => {
+                        let group = state.groups.get_mut(&update.gid).unwrap();
+                        let user = &group.users.get(&uid).unwrap().name;
 
                         screen.log(
                             Level::Info,
@@ -381,8 +400,8 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                 "[{}] {} ({}): {}",
                                 group.name.term_safe(),
                                 user.term_safe().bold(),
-                                update.uid,
-                                message.message.term_safe()
+                                uid,
+                                message.text.term_safe()
                             ),
                         );
 
@@ -393,7 +412,7 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                                     "[{}] {} ({}): attachment {}, size {} b",
                                     group.name.term_safe(),
                                     user.term_safe().bold(),
-                                    update.uid,
+                                    uid,
                                     attachment.id,
                                     attachment.size
                                 ),
@@ -410,19 +429,19 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
 
 enum Event {
     Screen(ScreenEvent),
-    Connect(Result<(HashMap<Cow<'static, str>, u32>, BasicClient), BasicConnectError>),
+    Connect(Result<BasicClient, BasicConnectError>),
     Update(Result<Update, Error>),
 }
 
 struct State {
-    groups: HashMap<u32, Group>,
+    groups: BTreeMap<u32, Group>,
     client: BasicClient,
     current: Option<(u32, u32)>, // (gid, uid)
 }
 
 struct Group {
-    name: Cow<'static, str>,
-    users: HashMap<u32, User>,
+    name: String,
+    users: BTreeMap<u32, User>,
     owned: HashSet<u32>,
     joined: bool,
 }

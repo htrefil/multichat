@@ -3,7 +3,7 @@ use multichat_proto::{
     Version,
 };
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{Error, ErrorKind};
 use tokio::io::{self, AsyncRead, AsyncWrite, BufReader, BufWriter, WriteHalf};
 use tokio::sync::mpsc::{self, Receiver};
@@ -13,7 +13,7 @@ use tokio::time;
 pub struct Client<T> {
     stream_write: BufWriter<WriteHalf<T>>,
     receiver: Receiver<Result<ServerMessage<'static>, Error>>,
-    // Updates queued while waiting for user join confirmation.
+    // Updates queued while waiting for confirmations.
     updates: VecDeque<Update>,
     config: Config,
 }
@@ -24,15 +24,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         stream: T,
         config: Config,
         access_token: AccessToken,
-    ) -> Result<(HashMap<Cow<'static, str>, u32>, Self), InitError> {
+    ) -> Result<Self, InitError> {
         let (stream_read, stream_write) = io::split(stream);
 
         let mut stream_read = BufReader::new(stream_read);
         let mut stream_write = BufWriter::new(stream_write);
 
+        // Write client version.
+        Version::CURRENT.write(&mut stream_write).await?;
+
         // Read server version.
         let version = Version::read(&mut stream_read).await?;
-        if !multichat_proto::VERSION.is_compatible(version) {
+        if version != Version::CURRENT {
             return Err(InitError::ProtocolVersion(version));
         }
 
@@ -42,12 +45,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             .await?;
 
         // Read auth response.
-        let (groups, ping_interval, ping_timeout) = match config.read(&mut stream_read).await? {
+        let (ping_interval, ping_timeout) = match config.read(&mut stream_read).await? {
             AuthResponse::Success {
-                groups,
                 ping_interval,
                 ping_timeout,
-            } => (groups, ping_interval, ping_timeout),
+            } => (ping_interval, ping_timeout),
             AuthResponse::Failed => return Err(InitError::Auth),
         };
 
@@ -68,40 +70,47 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
             }
         });
 
-        Ok((
-            groups,
-            Self {
-                stream_write,
-                receiver,
-                updates: VecDeque::new(),
-                config,
-            },
-        ))
+        Ok(Self {
+            stream_write,
+            receiver,
+            updates: VecDeque::new(),
+            config,
+        })
     }
 
-    /// Joins a group.
-    ///
-    /// Joining a nonexistent group is considered an error and will result in client disconnection by server.
+    /// Joins a group and returns its ID.
+    /// If the group does not exist, it will be created.
     ///
     /// This method is not cancel-safe.
-    pub async fn join_group(&mut self, gid: u32) -> Result<(), Error> {
+    pub async fn join_group(&mut self, name: &str) -> Result<u32, Error> {
         self.config
-            .write(&mut self.stream_write, &ClientMessage::JoinGroup { gid })
+            .write(
+                &mut self.stream_write,
+                &ClientMessage::JoinGroup { name: name.into() },
+            )
             .await?;
 
-        Ok(())
+        loop {
+            let message = self.receiver.recv().await.ok_or(ErrorKind::BrokenPipe)??;
+            match translate_message(message) {
+                Ok(update) => self.updates.push_back(update),
+                Err(Reply::ConfirmGroup(gid)) => return Ok(gid),
+                Err(Reply::Ping) => continue,
+                Err(_) => return Err(Error::new(ErrorKind::InvalidData, "Unexpected message")),
+            }
+        }
     }
 
-    /// Creates a user and returns its UID.
+    /// Creates a user and returns its ID.
     ///
     /// Specifying a nonexistent group is considered an error and will result in client disconnection by server.
     ///
     /// This method is not cancel-safe.
-    pub async fn join_user(&mut self, gid: u32, name: &str) -> Result<u32, Error> {
+    pub async fn init_user(&mut self, gid: u32, name: &str) -> Result<u32, Error> {
         self.config
             .write(
                 &mut self.stream_write,
-                &ClientMessage::JoinUser {
+                &ClientMessage::InitUser {
                     gid,
                     name: name.into(),
                 },
@@ -119,14 +128,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         }
     }
 
-    /// Leaves a user.
+    /// Destroys a user.
     ///
     /// Specifying a nonexistent group or user ID is considered an error and will result in client disconnection by server.
-    pub async fn leave_user(&mut self, gid: u32, uid: u32) -> Result<(), Error> {
+    pub async fn destroy_user(&mut self, gid: u32, uid: u32) -> Result<(), Error> {
         self.config
             .write(
                 &mut self.stream_write,
-                &ClientMessage::LeaveUser { gid, uid },
+                &ClientMessage::DestroyUser { gid, uid },
             )
             .await?;
 
@@ -140,7 +149,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         self.config
             .write(
                 &mut self.stream_write,
-                &ClientMessage::RenameUser {
+                &ClientMessage::Rename {
                     gid,
                     uid,
                     name: name.into(),
@@ -242,29 +251,31 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
 pub struct Update {
     /// The group ID that this update concerns.
     pub gid: u32,
-    /// The user ID that this update concerns.
-    pub uid: u32,
     /// Type of the update.
     pub kind: UpdateKind,
 }
 
 #[derive(Clone, Debug)]
 pub enum UpdateKind {
+    /// A group was created.
+    InitGroup { name: String },
+    /// A group was destroyed.
+    DestroyGroup,
     /// A user joined the group.
-    Join(String),
+    InitUser { uid: u32, name: String },
     /// A user left the group.
-    Leave,
+    DestroyUser { uid: u32 },
     /// A user was renamed.
-    Rename(String),
+    Rename { uid: u32, name: String },
     /// A user sent a message.
-    Message(Message),
+    Message { uid: u32, message: Message },
 }
 
 /// A message from a user.
 #[derive(Clone, Debug)]
 pub struct Message {
     /// The message text.
-    pub message: String,
+    pub text: String,
     /// The message attachments.
     /// Each attachment must be either [downloaded](Client::download_attachment) or [ignored](Client::ignore_attachment)
     /// as soon as possible since receiving the message.
@@ -286,25 +297,40 @@ impl From<Error> for InitError {
 enum Reply {
     Attachment(Vec<u8>),
     ConfirmClient(u32),
+    ConfirmGroup(u32),
     Ping,
 }
 
 fn translate_message(message: ServerMessage<'static>) -> Result<Update, Reply> {
     match message {
+        ServerMessage::InitGroup { name, gid } => Ok(Update {
+            gid,
+            kind: UpdateKind::InitGroup {
+                name: name.into_owned(),
+            },
+        }),
+        ServerMessage::DestroyGroup { gid } => Ok(Update {
+            gid,
+            kind: UpdateKind::DestroyGroup,
+        }),
         ServerMessage::InitUser { gid, uid, name } => Ok(Update {
             gid,
-            uid,
-            kind: UpdateKind::Join(name.into_owned()),
+            kind: UpdateKind::InitUser {
+                uid,
+                name: name.into_owned(),
+            },
         }),
-        ServerMessage::LeaveUser { gid, uid } => Ok(Update {
+        ServerMessage::DestroyUser { gid, uid } => Ok(Update {
             gid,
-            uid,
-            kind: UpdateKind::Leave,
+            kind: UpdateKind::DestroyUser { uid },
         }),
-        ServerMessage::RenameUser { gid, uid, name } => Ok(Update {
+        ServerMessage::Rename { gid, uid, name } => Ok(Update {
             gid,
-            uid,
-            kind: UpdateKind::Rename(name.into_owned()),
+
+            kind: UpdateKind::Rename {
+                uid,
+                name: name.into_owned(),
+            },
         }),
         ServerMessage::Message {
             gid,
@@ -313,13 +339,16 @@ fn translate_message(message: ServerMessage<'static>) -> Result<Update, Reply> {
             attachments,
         } => Ok(Update {
             gid,
-            uid,
-            kind: UpdateKind::Message(Message {
-                message: message.into_owned(),
-                attachments,
-            }),
+            kind: UpdateKind::Message {
+                uid,
+                message: Message {
+                    text: message.into_owned(),
+                    attachments,
+                },
+            },
         }),
-        ServerMessage::ConfirmClient { uid } => Err(Reply::ConfirmClient(uid)),
+        ServerMessage::ConfirmUser { uid } => Err(Reply::ConfirmClient(uid)),
+        ServerMessage::ConfirmGroup { gid } => Err(Reply::ConfirmGroup(gid)),
         ServerMessage::Attachment { data } => Err(Reply::Attachment(data.into_owned())),
         ServerMessage::Ping => Err(Reply::Ping),
     }

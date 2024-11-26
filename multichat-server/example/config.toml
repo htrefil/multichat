@@ -9,7 +9,3 @@ max-size = "512 MiB"
 # ping-interval = "30s"
 # How long will the server wait for a client to respond to a ping. Default is 1 seconds.
 # ping-timeout = "10s"
-groups = [
-    "foo",
-    "bar"
-]

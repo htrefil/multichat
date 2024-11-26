@@ -21,7 +21,6 @@ pub struct Config {
     pub ping_interval: Option<Duration>,
     #[serde(default, deserialize_with = "deserialize_duration")]
     pub ping_timeout: Option<Duration>,
-    pub groups: HashSet<String>,
     pub access_tokens: HashSet<AccessToken>,
 }
 
@@ -38,7 +37,7 @@ where
 {
     struct SizeVisitor;
 
-    impl<'de> Visitor<'de> for SizeVisitor {
+    impl Visitor<'_> for SizeVisitor {
         type Value = usize;
 
         fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {

@@ -2,6 +2,7 @@ use crate::tls::Acceptor;
 
 use multichat_proto::{
     AccessToken, Attachment, AuthRequest, AuthResponse, ClientMessage, Config, ServerMessage,
+    Version,
 };
 use slab::Slab;
 use std::borrow::Cow;
@@ -17,13 +18,13 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::Instrument;
 
 pub async fn run(
     listen_addr: SocketAddr,
     acceptor: impl Acceptor,
-    groups: impl IntoIterator<Item = String>,
     update_buffer: Option<NonZeroUsize>,
     access_tokens: HashSet<AccessToken>,
     config: Config,
@@ -35,23 +36,17 @@ pub async fn run(
     tracing::info!("Listening on {}", listen_addr);
 
     let update_buffer = update_buffer.map(|num| num.get()).unwrap_or(256);
-    let state = State {
+
+    let state = Arc::new(State {
         update_buffer,
-        groups: groups
-            .into_iter()
-            .map(|name| Group {
-                name,
-                users: RwLock::new(Slab::new()),
-                sender: broadcast::channel(update_buffer).0,
-            })
-            .collect(),
+        groups: RwLock::new(Slab::new()),
         access_tokens,
-    };
+        sender: broadcast::channel(update_buffer).0,
+    });
 
     let ping_interval = ping_interval.unwrap_or(Duration::from_secs(30));
     let ping_timeout = ping_timeout.unwrap_or(Duration::from_secs(5));
 
-    let state = Arc::new(state);
     loop {
         let (stream, addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
@@ -70,15 +65,46 @@ pub async fn run(
                     }
                 };
 
-                match connection(stream, addr, &state, config, ping_interval, ping_timeout).await {
+                let mut memberships = HashMap::new();
+
+                let result = connection(
+                    stream,
+                    addr,
+                    &state,
+                    config,
+                    ping_interval,
+                    ping_timeout,
+                    &mut memberships,
+                )
+                .await;
+
+                match result {
                     Ok(_) => tracing::info!("Disconnected"),
                     Err(err) => tracing::error!("Disconnected: {}", err),
                 }
 
-                // Remove all users created by this connection which didn't leave on their own.
-                for group in &state.groups {
-                    group.cleanup_users(addr).await;
+                for (_, membership) in memberships {
+                    membership.handle.abort();
+                    let _ = membership.handle.await;
                 }
+
+                let mut groups = state.groups.write().await;
+                groups.retain(|gid, group| {
+                    group.cleanup_users(addr);
+
+                    if group.sender.receiver_count() == 0 {
+                        tracing::debug!(%gid, name = ?group.name, "Destroying group");
+
+                        let _ = state.sender.send(GlobalUpdate {
+                            gid: gid.try_into().unwrap(),
+                            kind: GlobalUpdateKind::DestroyGroup,
+                        });
+
+                        return false;
+                    }
+
+                    true
+                });
             }
             .instrument(span),
         );
@@ -92,6 +118,7 @@ async fn connection(
     config: Config,
     ping_interval: Duration,
     ping_timeout: Duration,
+    memberships: &mut HashMap<u32, Membership>,
 ) -> Result<(), Error> {
     let (stream_read, stream_write) = io::split(stream);
 
@@ -100,7 +127,12 @@ async fn connection(
 
     // Send our version.
     // Intentionally bypass config write because Version does not implement Serialize.
-    multichat_proto::VERSION.write(&mut stream_write).await?;
+    Version::CURRENT.write(&mut stream_write).await?;
+
+    let version = Version::read(&mut stream_read).await?;
+    if version != Version::CURRENT {
+        return Err(Error::new(ErrorKind::Other, "Incompatible version"));
+    }
 
     // Read the client's auth request.
     let auth_request = config.read::<AuthRequest>(&mut stream_read).await?;
@@ -112,19 +144,11 @@ async fn connection(
         return Err(Error::new(ErrorKind::Other, "Invalid access token"));
     }
 
-    // Auth successful, send group list.
-    let groups = state
-        .groups
-        .iter()
-        .enumerate()
-        .map(|(gid, group)| (group.name.as_str().into(), gid.try_into().unwrap()))
-        .collect();
-
+    // Auth successful.
     config
         .write(
             &mut stream_write,
             &AuthResponse::Success {
-                groups,
                 ping_interval,
                 ping_timeout,
             },
@@ -142,19 +166,32 @@ async fn connection(
         }
     });
 
-    let update_buffer = state.groups.len().min(1) * state.update_buffer;
-    let (update_sender, mut update_receiver) = mpsc::channel(update_buffer);
+    // Send intitial updates.
+    for (gid, group) in &*state.groups.read().await {
+        config
+            .write(
+                &mut stream_write,
+                &ServerMessage::InitGroup {
+                    gid: gid.try_into().unwrap(),
+                    name: group.name.clone().into(),
+                },
+            )
+            .await?;
+    }
 
-    let mut group_handles = HashMap::new();
+    let (update_sender, mut update_receiver) = mpsc::channel(state.update_buffer);
+
     let mut attachments = Slab::<Arc<Vec<u8>>>::new();
     let mut ping_interval = time::interval(ping_interval);
     let mut pong_interval = time::interval(ping_timeout);
     let mut waiting_pong = false;
+    let mut receiver = state.sender.subscribe();
 
     loop {
         enum LocalUpdate {
             Client(ClientMessage<'static, 'static>),
-            Group((u32, Update)),
+            Global(GlobalUpdate),
+            Group((u32, GroupUpdate)),
             Ping,
         }
 
@@ -176,6 +213,12 @@ async fn connection(
                     Err(num) => return Err(Error::new(ErrorKind::Other, format!("Skipped {} group update(s)", num))),
                 }
             }
+            result = receiver.recv() => {
+                match result {
+                    Ok(update) => LocalUpdate::Global(update),
+                    Err(num) => return Err(Error::new(ErrorKind::Other, format!("Skipped {} global update(s)", num))),
+                }
+            }
             _ = ping_interval.tick() => LocalUpdate::Ping,
             _ = pong => return Err(Error::new(ErrorKind::Other, "Pong timeout")),
         };
@@ -188,77 +231,108 @@ async fn connection(
                 waiting_pong = false;
 
                 match message {
-                    ClientMessage::JoinGroup { gid } => {
-                        let group = gid
-                            .try_into()
-                            .ok()
-                            .and_then(|gid: usize| state.groups.get(gid))
-                            .ok_or_else(|| {
-                                Error::new(
-                                    ErrorKind::Other,
-                                    "Attempted to join a nonexistent group",
-                                )
-                            })?;
+                    ClientMessage::JoinGroup { name } => {
+                        let mut groups = state.groups.write().await;
 
+                        let find = groups.iter_mut().find(|(_, group)| group.name == name);
+                        let (gid, group, new) = match find {
+                            Some((gid, group)) => (gid, group, false),
+                            None => {
+                                let (sender, _) = broadcast::channel(state.update_buffer);
+                                let gid = groups.insert(Group {
+                                    name: name.clone().into(),
+                                    users: Slab::new(),
+                                    sender,
+                                });
+
+                                (gid, groups.get_mut(gid).unwrap(), true)
+                            }
+                        };
+
+                        let gid = gid.try_into().unwrap();
+                        let sender = group.sender.clone();
+                        let mut receiver = sender.subscribe();
                         let update_sender = update_sender.clone();
-                        let mut receiver = group.sender.subscribe();
-                        let prev = group_handles.insert(
-                            gid,
-                            tokio::spawn(async move {
-                                loop {
-                                    let result = match receiver.recv().await {
-                                        Ok(update) => Ok((gid, update)),
-                                        Err(RecvError::Lagged(num)) => Err(num),
-                                        Err(RecvError::Closed) => return,
-                                    };
 
-                                    // The binary or is intentional, we want the result to be
-                                    // sent regardless of being an error.
-                                    if result.is_err() | update_sender.send(result).await.is_err() {
-                                        return;
-                                    }
+                        let handle = tokio::spawn(async move {
+                            loop {
+                                let result = match receiver.recv().await {
+                                    Ok(update) => Ok((gid, update)),
+                                    Err(RecvError::Lagged(num)) => Err(num),
+                                    Err(RecvError::Closed) => return,
+                                };
+
+                                // The binary or is intentional, we want the result to be
+                                // sent regardless of being an error.
+                                if result.is_err() | update_sender.send(result).await.is_err() {
+                                    return;
                                 }
-                            }),
-                        );
+                            }
+                        });
 
-                        if prev.is_some() {
+                        let membership = Membership {
+                            handle,
+                            newly_joined: true,
+                        };
+
+                        if memberships.insert(gid, membership).is_some() {
                             return Err(Error::new(
                                 ErrorKind::Other,
                                 "Attempted to join a group twice",
                             ));
                         }
 
-                        for (uid, user) in &*group.users.read().await {
-                            // XXX: Perhaps it would be wise to write the message
-                            //      while the user list is not locked.
-                            config
-                                .write(
-                                    &mut stream_write,
-                                    &ServerMessage::InitUser {
-                                        gid,
-                                        uid: uid.try_into().unwrap(),
-                                        name: user.name.as_str().into(),
-                                    },
-                                )
-                                .await?;
+                        if new {
+                            let _ = state.sender.send(GlobalUpdate {
+                                gid,
+                                kind: GlobalUpdateKind::InitGroup {
+                                    name: name.clone().into(),
+                                },
+                            });
+                        } else {
+                            let users = group
+                                .users
+                                .iter()
+                                .map(|(uid, user)| (uid, user.name.clone()))
+                                .collect::<Vec<_>>();
+
+                            drop(groups);
+
+                            for (uid, name) in users {
+                                config
+                                    .write(
+                                        &mut stream_write,
+                                        &ServerMessage::InitUser {
+                                            gid,
+                                            uid: uid.try_into().unwrap(),
+                                            name: name.clone().into(),
+                                        },
+                                    )
+                                    .await?;
+                            }
                         }
 
-                        tracing::debug!(%gid, "Join group");
+                        config
+                            .write(&mut stream_write, &ServerMessage::ConfirmGroup { gid })
+                            .await?;
+
+                        tracing::debug!(%gid, ?name, "Join group");
                     }
                     ClientMessage::LeaveGroup { gid } => {
-                        gid.try_into()
+                        let mut groups = state.groups.write().await;
+
+                        let group = gid
+                            .try_into()
                             .ok()
-                            .and_then(|gid: usize| state.groups.get(gid))
+                            .and_then(|gid: usize| groups.get_mut(gid))
                             .ok_or_else(|| {
                                 Error::new(
                                     ErrorKind::Other,
                                     "Attempted to leave a nonexistent group",
                                 )
-                            })?
-                            .cleanup_users(addr)
-                            .await;
+                            })?;
 
-                        group_handles
+                        let handle = memberships
                             .remove(&gid)
                             .ok_or_else(|| {
                                 Error::new(
@@ -266,26 +340,42 @@ async fn connection(
                                     "Attempted to leave a non-joined group",
                                 )
                             })?
-                            .abort();
+                            .handle;
+
+                        // Wait for the task to finish.
+                        handle.abort();
+                        let _ = handle.await;
+
+                        group.cleanup_users(addr);
+
+                        if group.sender.receiver_count() == 0 {
+                            let group = groups.remove(gid.try_into().unwrap());
+                            let _ = state.sender.send(GlobalUpdate {
+                                gid,
+                                kind: GlobalUpdateKind::DestroyGroup,
+                            });
+
+                            tracing::debug!(%gid, name = ?group.name, "Destroyed group");
+                        }
 
                         tracing::debug!(%gid, "Leave group");
                     }
-                    ClientMessage::JoinUser { gid, name } => {
+                    ClientMessage::InitUser { gid, name } => {
+                        let mut groups = state.groups.write().await;
+
                         let group = gid
                             .try_into()
                             .ok()
-                            .and_then(|gid: usize| state.groups.get(gid))
+                            .and_then(|gid: usize| groups.get_mut(gid))
                             .ok_or_else(|| {
                                 Error::new(
                                     ErrorKind::Other,
-                                    "Attempted to join a user to a nonexistent group",
+                                    "Attempted to init a user in a nonexistent group",
                                 )
                             })?;
 
                         let uid = group
                             .users
-                            .write()
-                            .await
                             .insert(User {
                                 name: name.clone().into(),
                                 owner: addr,
@@ -293,52 +383,52 @@ async fn connection(
                             .try_into()
                             .unwrap();
 
-                        // Notify our client.
                         config
-                            .write(&mut stream_write, &ServerMessage::ConfirmClient { uid })
+                            .write(&mut stream_write, &ServerMessage::ConfirmUser { uid })
                             .await?;
 
-                        // Notify our group.
-                        let _ = group.sender.send(Update::Join {
+                        let _ = group.sender.send(GroupUpdate {
                             uid,
-                            name: name.clone().into(),
+                            kind: GroupUpdateKind::InitUser {
+                                name: name.clone().into(),
+                            },
                         });
 
-                        tracing::debug!(%gid, ?name, %uid, "Join user");
+                        tracing::debug!(%gid, ?name, %uid, "Init user");
                     }
-                    ClientMessage::LeaveUser { gid, uid } => {
+                    ClientMessage::DestroyUser { gid, uid } => {
+                        let mut groups = state.groups.write().await;
+
                         let group = gid
                             .try_into()
                             .ok()
-                            .and_then(|gid: usize| state.groups.get(gid))
+                            .and_then(|gid: usize| groups.get_mut(gid))
                             .ok_or_else(|| {
                                 Error::new(
                                     ErrorKind::Other,
-                                    "Attempted to remove a user from a nonexistent group",
+                                    "Attempted to destroy a user from a nonexistent group",
                                 )
                             })?;
 
-                        let mut users = group.users.write().await;
-
                         let err = || {
-                            Error::new(ErrorKind::Other, "Attempted to remove a nonexistent user")
+                            Error::new(ErrorKind::Other, "Attempted to destroy a nonexistent user")
                         };
 
                         let uid = uid.try_into().map_err(|_| err())?;
-                        let user = users.get(uid).ok_or_else(err)?;
+                        let user = group.users.get(uid).ok_or_else(err)?;
 
                         if user.owner != addr {
                             return Err(Error::new(
                                 ErrorKind::Other,
-                                "Attempted to remove a non owned user",
+                                "Attempted to destroy a non owned user",
                             ));
                         }
 
-                        users.remove(uid);
+                        group.users.remove(uid);
 
-                        // Notify our group.
-                        let _ = group.sender.send(Update::Leave {
+                        let _ = group.sender.send(GroupUpdate {
                             uid: uid.try_into().unwrap(),
+                            kind: GroupUpdateKind::DestroyUser,
                         });
 
                         tracing::debug!(%gid, %uid, "Leave user");
@@ -349,10 +439,12 @@ async fn connection(
                         message,
                         attachments,
                     } => {
+                        let groups = state.groups.read().await;
+
                         let group = gid
                             .try_into()
                             .ok()
-                            .and_then(|gid: usize| state.groups.get(gid))
+                            .and_then(|gid: usize| groups.get(gid))
                             .ok_or_else(|| {
                                 Error::new(
                                     ErrorKind::Other,
@@ -367,10 +459,8 @@ async fn connection(
                             )
                         };
 
-                        let users = group.users.read().await;
-
                         let uid = uid.try_into().map_err(|_| err())?;
-                        let user = users.get(uid).ok_or_else(err)?;
+                        let user = group.users.get(uid).ok_or_else(err)?;
 
                         if user.owner != addr {
                             return Err(Error::new(
@@ -379,29 +469,30 @@ async fn connection(
                             ));
                         }
 
-                        drop(users);
-
                         let message_clone = message.clone();
 
-                        // Notify our group.
-                        let _ = group.sender.send(Update::Message {
+                        let _ = group.sender.send(GroupUpdate {
                             uid: uid.try_into().unwrap(),
-                            message: message.into_owned().into(),
-                            attachments: attachments
-                                .into_owned() // Already owned.
-                                .into_iter()
-                                .map(Cow::into_owned) // Already owned.
-                                .map(Arc::new)
-                                .collect(),
+                            kind: GroupUpdateKind::Message {
+                                message: message.into_owned(),
+                                attachments: attachments
+                                    .into_owned() // Already owned.
+                                    .into_iter()
+                                    .map(Cow::into_owned) // Already owned.
+                                    .map(Arc::new)
+                                    .collect(),
+                            },
                         });
 
-                        tracing::debug!(%gid, %uid, message = ?message_clone, "Send message");
+                        tracing::debug!(%gid, %uid, msg = ?message_clone, "Send message");
                     }
-                    ClientMessage::RenameUser { gid, uid, name } => {
+                    ClientMessage::Rename { gid, uid, name } => {
+                        let mut groups = state.groups.write().await;
+
                         let group = gid
                             .try_into()
                             .ok()
-                            .and_then(|gid: usize| state.groups.get(gid))
+                            .and_then(|gid: usize| groups.get_mut(gid))
                             .ok_or_else(|| {
                                 Error::new(
                                     ErrorKind::Other,
@@ -409,12 +500,10 @@ async fn connection(
                                 )
                             })?;
 
-                        let mut users = group.users.write().await;
-
                         let user = uid
                             .try_into()
                             .ok()
-                            .and_then(|uid: usize| users.get_mut(uid))
+                            .and_then(|uid: usize| group.users.get_mut(uid))
                             .ok_or_else(|| {
                                 Error::new(
                                     ErrorKind::Other,
@@ -431,10 +520,11 @@ async fn connection(
 
                         user.name = name.clone().into();
 
-                        // Notify our group.
-                        let _ = group.sender.send(Update::Rename {
+                        let _ = group.sender.send(GroupUpdate {
                             uid,
-                            name: name.clone().into(),
+                            kind: GroupUpdateKind::Rename {
+                                name: name.clone().into(),
+                            },
                         });
 
                         tracing::debug!(%gid, %uid, ?name, "Rename");
@@ -476,26 +566,81 @@ async fn connection(
 
                         tracing::debug!(%id, "Ignore attachment");
                     }
-                    ClientMessage::Pong => tracing::debug!("Pong"),
+                    ClientMessage::Pong => tracing::trace!("Pong"),
+                }
+            }
+            LocalUpdate::Global(update) => {
+                ping_interval.reset();
+
+                let init = matches!(update.kind, GlobalUpdateKind::InitGroup { .. });
+                let message = match update.kind {
+                    GlobalUpdateKind::InitGroup { name } => ServerMessage::InitGroup {
+                        name: name.into(),
+                        gid: update.gid,
+                    },
+                    GlobalUpdateKind::DestroyGroup => {
+                        ServerMessage::DestroyGroup { gid: update.gid }
+                    }
+                };
+
+                config.write(&mut stream_write, &message).await?;
+
+                if !init {
+                    continue;
+                }
+
+                let membership = match memberships.get_mut(&update.gid) {
+                    Some(membership) => membership,
+                    None => continue,
+                };
+
+                if !membership.newly_joined {
+                    continue;
+                }
+
+                membership.newly_joined = false;
+
+                let groups = state.groups.read().await;
+                let users = groups[update.gid.try_into().unwrap()]
+                    .users
+                    .iter()
+                    .map(|(uid, user)| (uid, user.name.clone()))
+                    .collect::<Vec<_>>();
+
+                drop(groups);
+
+                for (uid, name) in users {
+                    config
+                        .write(
+                            &mut stream_write,
+                            &ServerMessage::InitUser {
+                                gid: update.gid,
+                                uid: uid.try_into().unwrap(),
+                                name: name.clone().into(),
+                            },
+                        )
+                        .await?;
                 }
             }
             LocalUpdate::Group((gid, update)) => {
                 ping_interval.reset();
 
-                let message = match update {
-                    Update::Join { uid, name } => ServerMessage::InitUser {
+                let message = match update.kind {
+                    GroupUpdateKind::InitUser { name } => ServerMessage::InitUser {
                         gid,
-                        uid,
+                        uid: update.uid,
                         name: name.into(),
                     },
-                    Update::Leave { uid } => ServerMessage::LeaveUser { gid, uid },
-                    Update::Rename { uid, name } => ServerMessage::RenameUser {
+                    GroupUpdateKind::DestroyUser => ServerMessage::DestroyUser {
                         gid,
-                        uid,
+                        uid: update.uid,
+                    },
+                    GroupUpdateKind::Rename { name } => ServerMessage::Rename {
+                        gid,
+                        uid: update.uid,
                         name: name.into(),
                     },
-                    Update::Message {
-                        uid,
+                    GroupUpdateKind::Message {
                         message,
                         attachments: update_attachments,
                     } => {
@@ -512,8 +657,8 @@ async fn connection(
 
                         ServerMessage::Message {
                             gid,
-                            uid,
-                            message: message.into_owned().into(),
+                            uid: update.uid,
+                            message: message.into(),
                             attachments: message_attachments,
                         }
                     }
@@ -522,7 +667,7 @@ async fn connection(
                 config.write(&mut stream_write, &message).await?;
             }
             LocalUpdate::Ping => {
-                tracing::debug!("Sending ping");
+                tracing::trace!("Sending ping");
 
                 config
                     .write(&mut stream_write, &ServerMessage::Ping)
@@ -540,21 +685,23 @@ async fn connection(
 struct State {
     update_buffer: usize,
     access_tokens: HashSet<AccessToken>,
-    groups: Vec<Group>,
+    groups: RwLock<Slab<Group>>,
+    sender: Sender<GlobalUpdate>,
 }
 
 struct Group {
     name: String,
-    users: RwLock<Slab<User>>,
-    sender: Sender<Update>,
+    users: Slab<User>,
+    sender: Sender<GroupUpdate>,
 }
 
 impl Group {
-    async fn cleanup_users(&self, addr: SocketAddr) {
-        self.users.write().await.retain(|uid, user| {
+    fn cleanup_users(&mut self, addr: SocketAddr) {
+        self.users.retain(|uid, user| {
             if user.owner == addr {
-                let _ = self.sender.send(Update::Leave {
+                let _ = self.sender.send(GroupUpdate {
                     uid: uid.try_into().unwrap(),
+                    kind: GroupUpdateKind::DestroyUser,
                 });
 
                 return false;
@@ -565,29 +712,50 @@ impl Group {
     }
 }
 
-pub struct User {
+struct User {
     name: String,
     // Owning connection.
     owner: SocketAddr,
 }
 
+struct Membership {
+    handle: JoinHandle<()>,
+    newly_joined: bool,
+}
+
 #[derive(Clone)]
-enum Update {
-    Join {
-        uid: u32,
+struct GlobalUpdate {
+    gid: u32,
+    kind: GlobalUpdateKind,
+}
+
+#[derive(Clone)]
+enum GlobalUpdateKind {
+    InitGroup {
         // Name is included here due to the ABA problem.
         name: String,
     },
-    Leave {
-        uid: u32,
-    },
-    Rename {
-        uid: u32,
+    DestroyGroup,
+}
+
+#[derive(Clone)]
+struct GroupUpdate {
+    uid: u32,
+    kind: GroupUpdateKind,
+}
+
+#[derive(Clone)]
+enum GroupUpdateKind {
+    InitUser {
+        // Name is included here due to the ABA problem.
         name: String,
     },
+    DestroyUser,
     Message {
-        uid: u32,
-        message: Cow<'static, str>,
+        message: String,
         attachments: Vec<Arc<Vec<u8>>>,
+    },
+    Rename {
+        name: String,
     },
 }

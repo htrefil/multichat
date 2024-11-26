@@ -37,7 +37,7 @@ impl Config {
         let mut buffer = vec![0; length];
         stream.read_exact(&mut buffer).await?;
 
-        options().deserialize(&*buffer).map_err(|err| match *err {
+        options().deserialize(&buffer).map_err(|err| match *err {
             bincode::ErrorKind::Io(err) => err,
             err => Error::new(ErrorKind::InvalidData, err),
         })
@@ -114,7 +114,6 @@ mod tests {
     use crate::client::ClientMessage;
     use crate::server::{AuthResponse, ServerMessage};
 
-    use std::collections::HashMap;
     use std::fmt::Debug;
     use std::time::Duration;
 
@@ -133,21 +132,14 @@ mod tests {
     #[tokio::test]
     async fn roundtrip() {
         roundtrip_serialize(&AuthResponse::Success {
-            groups: {
-                let mut groups = HashMap::new();
-                groups.insert("first".into(), 1);
-                groups.insert("second".into(), 2);
-
-                groups
-            },
             ping_interval: Duration::from_secs(10),
             ping_timeout: Duration::from_secs(5),
         })
         .await;
 
-        roundtrip_serialize(&ServerMessage::ConfirmClient { uid: 123456 }).await;
+        roundtrip_serialize(&ServerMessage::ConfirmUser { uid: 123456 }).await;
 
-        roundtrip_serialize(&ClientMessage::JoinUser {
+        roundtrip_serialize(&ClientMessage::InitUser {
             gid: 56789,
             name: "Borůvka".into(),
         })

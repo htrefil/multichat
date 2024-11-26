@@ -9,5 +9,5 @@ mod wire;
 pub use access_token::AccessToken;
 pub use client::{AuthRequest, ClientMessage};
 pub use server::{Attachment, AuthResponse, ServerMessage};
-pub use version::{Version, VERSION};
+pub use version::Version;
 pub use wire::{read, write, Config};

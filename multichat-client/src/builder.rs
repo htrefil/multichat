@@ -2,8 +2,6 @@ use crate::client::{Client, InitError};
 use crate::net::{Addr, BasicConnector, Connector};
 
 use multichat_proto::{AccessToken, Config, Version};
-use std::borrow::Cow;
-use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::Error;
 use std::num::NonZeroUsize;
@@ -45,7 +43,7 @@ impl<T: Connector> ClientBuilder<T> {
         &self,
         addr: impl Addr<'_>,
         access_token: AccessToken,
-    ) -> Result<(HashMap<Cow<'static, str>, u32>, Client<T::Stream>), ConnectError<T::Err>> {
+    ) -> Result<Client<T::Stream>, ConnectError<T::Err>> {
         let incoming_buffer = self
             .incoming_buffer
             .map_err(|_| ConnectError::InvalidParameter)?

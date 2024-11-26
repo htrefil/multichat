@@ -35,7 +35,7 @@ impl<'de> Deserialize<'de> for AccessToken {
     {
         struct AccessTokenVisitor;
 
-        impl<'de> Visitor<'de> for AccessTokenVisitor {
+        impl Visitor<'_> for AccessTokenVisitor {
             type Value = AccessToken;
 
             fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {

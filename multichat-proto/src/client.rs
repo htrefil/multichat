@@ -7,15 +7,16 @@ use crate::access_token::AccessToken;
 #[derive(Deserialize, Serialize, Clone, Debug, Eq, PartialEq)]
 pub enum ClientMessage<'a, 'b> {
     /// Subscribe to a groups updates.
-    JoinGroup { gid: u32 },
+    /// Creates a new group if it does not exist.
+    JoinGroup { name: Cow<'a, str> },
     /// Unsubscribe from a groups messages.
     LeaveGroup { gid: u32 },
     /// Join a group as a user.
-    JoinUser { gid: u32, name: Cow<'a, str> },
+    InitUser { gid: u32, name: Cow<'a, str> },
     /// Leave a group as a user.
-    LeaveUser { gid: u32, uid: u32 },
+    DestroyUser { gid: u32, uid: u32 },
     /// Change the name of a user.
-    RenameUser {
+    Rename {
         gid: u32,
         uid: u32,
         name: Cow<'a, str>,
