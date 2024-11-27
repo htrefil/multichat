@@ -136,7 +136,10 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                             }
                         }
                         Command::Disconnect => {
-                            state = None;
+                            if let Some(state) = state.take() {
+                                let _ = state.client.shutdown().await;
+                            }
+
                             connecting = false;
                         }
                         Command::Join { group, user } => {
@@ -287,9 +290,23 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                         }
                     }
                 }
-                ScreenEvent::Quit => return Ok(()),
+                ScreenEvent::Quit => {
+                    if let Some(state) = state.take() {
+                        let _ = state.client.shutdown().await;
+                    }
+
+                    return Ok(());
+                }
             },
             Event::Connect(result) => {
+                if !connecting {
+                    if let Ok(client) = result {
+                        let _ = client.shutdown().await;
+                    }
+
+                    continue;
+                }
+
                 connecting = false;
 
                 match result {

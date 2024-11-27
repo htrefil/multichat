@@ -83,6 +83,7 @@ pub async fn run(
                     Err(err) => tracing::error!("Disconnected: {}", err),
                 }
 
+                // Garbage collect users and groups.
                 for (_, membership) in memberships {
                     membership.handle.abort();
                     let _ = membership.handle.await;
@@ -166,14 +167,22 @@ async fn connection(
         }
     });
 
+    let groups = state
+        .groups
+        .read()
+        .await
+        .iter()
+        .map(|(gid, group)| (gid, group.name.clone()))
+        .collect::<Vec<_>>();
+
     // Send intitial updates.
-    for (gid, group) in &*state.groups.read().await {
+    for (gid, name) in groups {
         config
             .write(
                 &mut stream_write,
                 &ServerMessage::InitGroup {
                     gid: gid.try_into().unwrap(),
-                    name: group.name.clone().into(),
+                    name: name.into(),
                 },
             )
             .await?;
@@ -567,6 +576,10 @@ async fn connection(
                         tracing::debug!(%id, "Ignore attachment");
                     }
                     ClientMessage::Pong => tracing::trace!("Pong"),
+                    ClientMessage::Shutdown => {
+                        tracing::debug!("Shutdown");
+                        return Ok(());
+                    }
                 }
             }
             LocalUpdate::Global(update) => {

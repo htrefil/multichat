@@ -34,6 +34,8 @@ pub enum ClientMessage<'a, 'b> {
     IgnoreAttachment { id: u32 },
     /// Reply to a ping message.
     Pong,
+    /// Terminate the connection.
+    Shutdown,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq)]
