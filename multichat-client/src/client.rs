@@ -300,6 +300,11 @@ pub enum UpdateKind {
     /// A group was created.
     InitGroup { name: String },
     /// A group was destroyed.
+    ///
+    /// Groups are destroyed when they become empty and there are no outstanding clients subscribed to them.
+    ///
+    /// If your client application only cares about a set of groups it joins at the beginning of its lifecycle,
+    /// this update is safe to ignore.
     DestroyGroup,
     /// A user joined the group.
     InitUser { uid: u32, name: String },

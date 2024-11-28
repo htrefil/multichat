@@ -2,7 +2,7 @@
 //! protocol used for bridging textual communications from various sources over the internet.
 //!
 //! # Cargo features
-//! - `tls` -- enables clients to connect to TLS encrypted servers with native_tls; enabled by default
+//! - `tls` -- enables clients to connect to TLS encrypted servers with rustls; enabled by default
 //!
 //! # Example echo client
 //! ```rust
@@ -12,24 +12,23 @@
 //! async fn echo() -> Result<(), Box<dyn Error>> {
 //!     // This is a dummy access token for demonstration purposes.
 //!     let access_token = "52f0395327987f07f805c3ac54fe38ac123303fcdb62a61fdfc9b8082195486c".parse()?;
-//!     let (groups, mut client) = ClientBuilder::basic().connect("127.0.0.1:8585", access_token).await?;
+//!     let mut client = ClientBuilder::basic().connect("127.0.0.1:8585", access_token).await?;
 //!
-//!     // Find a group named "fun" and join it.
-//!     let gid = *groups.get("fun").ok_or("Group not found")?;
-//!     client.join_group(gid).await?;
+//!     // Join a group named "fun".
+//!     let gid = client.join_group("fun").await?;
 //!
 //!     // Create a new user in the group.
-//!     let uid = client.join_user(gid, "example").await?;
+//!     let uid = client.init_user(gid, "example").await?;
 //!
 //!     loop {
 //!         // Read what others say and repeat it.
 //!         let update = client.read_update().await?;
-//!         if update.uid != uid {
-//!             if let UpdateKind::Message(message) = update.kind {
-//!                 client
-//!                     .send_message(gid, uid, &message.message, &[])
-//!                     .await?;
+//!         if let UpdateKind::Message { uid: message_uid, message } = update.kind {
+//!             if message_uid == uid {
+//!                continue;
 //!             }
+//!
+//!             client.send_message(gid, uid, &message.text, &[]).await?;
 //!         }
 //!     }
 //! }
