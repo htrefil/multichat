@@ -177,6 +177,7 @@ async fn connection(
         .read()
         .await
         .iter()
+        .filter(|(_, group)| groups.contains(&group.name))
         .map(|(gid, group)| (gid, group.name.clone()))
         .collect::<Vec<_>>();
 
@@ -706,10 +707,17 @@ async fn connection(
 
                 let init = matches!(update.kind, GlobalUpdateKind::InitGroup { .. });
                 let message = match update.kind {
-                    GlobalUpdateKind::InitGroup { name } => ServerMessage::InitGroup {
-                        name: name.into(),
-                        gid: update.gid,
-                    },
+                    GlobalUpdateKind::InitGroup { name } => {
+                        if !groups.contains(&name) {
+                            continue;
+                        }
+
+                        ServerMessage::InitGroup {
+                            name: name.into(),
+                            gid: update.gid,
+                        }
+                    }
+
                     GlobalUpdateKind::DestroyGroup => {
                         ServerMessage::DestroyGroup { gid: update.gid }
                     }
