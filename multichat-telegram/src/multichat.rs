@@ -195,9 +195,10 @@ pub async fn run(
                         }
 
                         if !group.users.values().any(|user| user.typing) {
-                            let typing = group.typing.take().unwrap();
-                            typing.abort();
-                            let _ = typing.await;
+                            if let Some(typing) = group.typing.take() {
+                                typing.abort();
+                                let _ = typing.await;
+                            }
 
                             continue;
                         }
