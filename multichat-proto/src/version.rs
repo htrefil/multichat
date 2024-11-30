@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub struct Version(pub u16);
 
 impl Version {
-    pub const CURRENT: Self = Self(1);
+    pub const CURRENT: Self = Self(2);
 
     /// Reads a version from a stream. It is recommended that the stream is buffered.
     ///
