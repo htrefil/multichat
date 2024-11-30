@@ -194,6 +194,14 @@ pub async fn run(
                             .await?;
                         }
 
+                        if !group.users.values().any(|user| user.typing) {
+                            let typing = group.typing.take().unwrap();
+                            typing.abort();
+                            let _ = typing.await;
+
+                            continue;
+                        }
+
                         if group.typing.is_some() {
                             force_typing.push_back(update.gid);
                         }
