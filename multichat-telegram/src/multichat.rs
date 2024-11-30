@@ -1,8 +1,9 @@
 use multichat_client::{MaybeTlsClient, Update, UpdateKind};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::time::Duration;
 use std::{io, mem, slice};
 use teloxide::payloads::SendMessageSetters;
 use teloxide::prelude::Requester;
@@ -12,7 +13,8 @@ use teloxide::types::{
 };
 use teloxide::{Bot, RequestError};
 use thiserror::Error;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{self, Receiver};
+use tokio::task::JoinHandle;
 use tokio::time;
 
 use crate::markdown_safe::MarkdownSafeExt;
@@ -31,20 +33,42 @@ pub async fn run(
     bot: Bot,
     chat_to_group: &HashMap<ChatId, HashSet<u32>>,
     group_to_chat: &HashMap<u32, HashSet<ChatId>>,
-    mut receiver: Receiver<TelegramEvent>,
+    mut telegram_receiver: Receiver<TelegramEvent>,
 ) -> Result<(), Error> {
-    let mut telegram_users = HashMap::<(UserId, ChatId), TelegramUser>::new();
-    let mut multichat_users = HashMap::new();
+    let mut users = HashMap::<(UserId, ChatId), TelegramUser>::new();
+    let mut groups = group_to_chat
+        .keys()
+        .map(|gid| {
+            (
+                *gid,
+                Group {
+                    users: HashMap::new(),
+                    typing: None,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
 
     let mut owned = HashSet::new();
+    let (typing_sender, mut typing_receiver) = mpsc::channel(groups.len());
+    let mut force_typing = VecDeque::new();
 
     loop {
+        let typing = async {
+            if let Some(gid) = force_typing.pop_front() {
+                return gid;
+            }
+
+            typing_receiver.recv().await.unwrap()
+        };
+
         let event = tokio::select! {
-            event = receiver.recv() => match event {
+            event = telegram_receiver.recv() => match event {
                 Some(event) => Event::Telegram(event),
                 None => break,
             },
             update = client.read_update() => Event::Multichat(update?),
+            gid = typing => Event::Typing(gid),
         };
 
         match event {
@@ -54,17 +78,15 @@ pub async fn run(
                     text,
                     attachment,
                 } => {
-                    let chat_id = event.chat_id;
-
-                    let gids = match chat_to_group.get(&chat_id) {
+                    let gids = match chat_to_group.get(&event.chat_id) {
                         Some(gids) => gids,
                         None => {
-                            tracing::warn!(%chat_id, "Telegram chat not found");
+                            tracing::warn!(chat_id = %event.chat_id, "Telegram chat not found");
                             continue;
                         }
                     };
 
-                    let entry = telegram_users.entry((event.user_id, event.chat_id));
+                    let entry = users.entry((event.user_id, event.chat_id));
                     let user = match entry {
                         Entry::Occupied(entry) => {
                             let user = entry.into_mut();
@@ -103,12 +125,11 @@ pub async fn run(
                     };
 
                     for (gid, uid) in &user.gid_uid {
-                        tracing::debug!(%gid, %uid, msg = ?text, "Sending message to Multichat");
                         client.send_message(*gid, *uid, &text, attachments).await?;
                     }
                 }
                 EventKind::Leave => {
-                    let user = match telegram_users.remove(&(event.user_id, event.chat_id)) {
+                    let user = match users.remove(&(event.user_id, event.chat_id)) {
                         Some(user) => user,
                         None => continue,
                     };
@@ -123,19 +144,17 @@ pub async fn run(
                 ..
             }) => continue,
             Event::Multichat(update) => {
+                let group = groups.get_mut(&update.gid).unwrap();
                 let chat_ids = group_to_chat.get(&update.gid).unwrap();
 
                 match update.kind {
                     UpdateKind::InitUser { uid, name } => {
                         let owned = owned.remove(&(update.gid, uid));
-                        let user =
-                            multichat_users
-                                .entry((update.gid, uid))
-                                .or_insert(MultichatUser {
-                                    name,
-                                    typing: false,
-                                    owned,
-                                });
+                        let user = group.users.entry(uid).or_insert(MultichatUser {
+                            name,
+                            owned,
+                            typing: false,
+                        });
 
                         if user.owned {
                             continue;
@@ -153,23 +172,12 @@ pub async fn run(
                             .await?;
                         }
 
-                        let typing = multichat_users
-                            .iter()
-                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
-
-                        if !typing {
-                            continue;
-                        }
-
-                        for chat_id in chat_ids {
-                            rate_limit(|| async {
-                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
-                            })
-                            .await?;
+                        if group.typing.is_some() {
+                            force_typing.push_back(update.gid);
                         }
                     }
                     UpdateKind::DestroyUser { uid } => {
-                        let user = multichat_users.remove(&(update.gid, uid)).unwrap();
+                        let user = group.users.remove(&uid).unwrap();
                         if user.owned {
                             continue;
                         }
@@ -186,23 +194,12 @@ pub async fn run(
                             .await?;
                         }
 
-                        let typing = multichat_users
-                            .iter()
-                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
-
-                        if !typing {
-                            continue;
-                        }
-
-                        for chat_id in chat_ids {
-                            rate_limit(|| async {
-                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
-                            })
-                            .await?;
+                        if group.typing.is_some() {
+                            force_typing.push_back(update.gid);
                         }
                     }
                     UpdateKind::Message { uid, message } => {
-                        let user = multichat_users.get(&(update.gid, uid)).unwrap();
+                        let user = group.users.get(&uid).unwrap();
                         if user.owned {
                             for attachment in message.attachments {
                                 client.ignore_attachment(attachment.id).await?;
@@ -266,27 +263,16 @@ pub async fn run(
                             }
                         }
 
-                        let typing = multichat_users
-                            .iter()
-                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
-
-                        if !typing {
-                            continue;
-                        }
-
-                        for chat_id in chat_ids {
-                            rate_limit(|| async {
-                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
-                            })
-                            .await?;
+                        if group.typing.is_some() {
+                            force_typing.push_back(update.gid);
                         }
                     }
                     UpdateKind::Rename {
                         uid,
                         name: new_name,
                     } => {
-                        let user = multichat_users.get_mut(&(update.gid, uid)).unwrap();
-                        let old_name = mem::replace(&mut user.name, new_name.clone());
+                        let user = group.users.get_mut(&uid).unwrap();
+                        let old_name = mem::replace(&mut user.name, new_name);
 
                         if user.owned {
                             continue;
@@ -295,7 +281,7 @@ pub async fn run(
                         let message = format!(
                             "*{}*: renamed to *{}*",
                             old_name.markdown_safe(),
-                            new_name.markdown_safe()
+                            user.name.markdown_safe()
                         );
 
                         for chat_id in chat_ids {
@@ -308,59 +294,67 @@ pub async fn run(
                             .await?;
                         }
 
-                        let typing = multichat_users
-                            .iter()
-                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
-
-                        if !typing {
-                            continue;
-                        }
-
-                        for chat_id in chat_ids {
-                            rate_limit(|| async {
-                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
-                            })
-                            .await?;
+                        if group.typing.is_some() {
+                            force_typing.push_back(update.gid);
                         }
                     }
                     UpdateKind::StartTyping { uid } => {
-                        let user = multichat_users.get_mut(&(update.gid, uid)).unwrap();
-                        user.typing = true;
+                        group.users.get_mut(&uid).unwrap().typing = true;
 
-                        for chat_id in &group_to_chat[&update.gid] {
-                            rate_limit(|| async {
-                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
-                            })
-                            .await?;
-                        }
-
-                        continue;
-                    }
-                    UpdateKind::StopTyping { uid } => {
-                        let user = multichat_users.get_mut(&(update.gid, uid)).unwrap();
-                        user.typing = false;
-
-                        let typing = multichat_users
-                            .iter()
-                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
-
-                        if typing {
+                        if group.typing.is_some() {
                             continue;
                         }
 
-                        for chat_id in &group_to_chat[&update.gid] {
-                            rate_limit(|| async {
-                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
-                            })
-                            .await?;
+                        let gid = update.gid;
+                        let sender = typing_sender.clone();
+
+                        // Telegram removes the typing indicator after ~5 seconds.
+                        group.typing = Some(tokio::spawn(async move {
+                            let mut interval = time::interval(Duration::from_secs(5));
+
+                            loop {
+                                tokio::select! {
+                                    _ = interval.tick() => {
+                                        if sender.send(gid).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    _ = sender.closed() => break,
+                                }
+                            }
+                        }));
+                    }
+                    UpdateKind::StopTyping { uid } => {
+                        let user = group.users.get_mut(&uid).unwrap();
+                        user.typing = false;
+
+                        if group.users.values().any(|user| user.typing) {
+                            continue;
                         }
 
-                        continue;
+                        let typing = group.typing.take().unwrap();
+                        typing.abort();
+                        let _ = typing.await;
                     }
                     UpdateKind::InitGroup { .. } | UpdateKind::DestroyGroup { .. } => {
                         // Handled above.
                         unreachable!()
                     }
+                }
+            }
+            Event::Typing(gid) => {
+                let group = groups.get_mut(&gid).unwrap();
+                if group.typing.is_none() {
+                    // Harmless race.
+                    continue;
+                }
+
+                let chat_ids = group_to_chat.get(&gid).unwrap();
+                for chat_id in chat_ids {
+                    rate_limit(|| async {
+                        bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                    })
+                    .await?;
                 }
             }
         }
@@ -432,11 +426,17 @@ async fn rate_limit<T, C: Fn() -> F, F: Future<Output = Result<T, RequestError>>
 enum Event {
     Telegram(TelegramEvent),
     Multichat(Update),
+    Typing(u32),
 }
 
 struct TelegramUser {
     name: String,
     gid_uid: Vec<(u32, u32)>,
+}
+
+struct Group {
+    users: HashMap<u32, MultichatUser>,
+    typing: Option<JoinHandle<()>>,
 }
 
 struct MultichatUser {
