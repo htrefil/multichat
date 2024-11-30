@@ -1,3 +1,4 @@
+use crate::config::Groups;
 use crate::tls::Acceptor;
 
 use multichat_proto::{
@@ -6,7 +7,7 @@ use multichat_proto::{
 };
 use slab::Slab;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
@@ -26,7 +27,7 @@ pub async fn run(
     listen_addr: SocketAddr,
     acceptor: impl Acceptor,
     update_buffer: Option<NonZeroUsize>,
-    access_tokens: HashSet<AccessToken>,
+    access_tokens: HashMap<AccessToken, Groups>,
     config: Config,
     ping_timeout: Option<Duration>,
     ping_interval: Option<Duration>,
@@ -137,13 +138,17 @@ async fn connection(
 
     // Read the client's auth request.
     let auth_request = config.read::<AuthRequest>(&mut stream_read).await?;
-    if !state.access_tokens.contains(&auth_request.access_token) {
-        config
-            .write(&mut stream_write, &AuthResponse::Failed)
-            .await?;
 
-        return Err(Error::new(ErrorKind::Other, "Invalid access token"));
-    }
+    let groups = match state.access_tokens.get(&auth_request.access_token) {
+        Some(groups) => groups,
+        None => {
+            config
+                .write(&mut stream_write, &AuthResponse::Failed)
+                .await?;
+
+            return Err(Error::new(ErrorKind::Other, "Invalid access token"));
+        }
+    };
 
     // Auth successful.
     config
@@ -167,7 +172,7 @@ async fn connection(
         }
     });
 
-    let groups = state
+    let init_groups = state
         .groups
         .read()
         .await
@@ -176,7 +181,7 @@ async fn connection(
         .collect::<Vec<_>>();
 
     // Send intitial updates.
-    for (gid, name) in groups {
+    for (gid, name) in init_groups {
         config
             .write(
                 &mut stream_write,
@@ -241,6 +246,13 @@ async fn connection(
 
                 match message {
                     ClientMessage::JoinGroup { name } => {
+                        if !groups.contains(&name) {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to join a forbidden group",
+                            ));
+                        }
+
                         let mut groups = state.groups.write().await;
 
                         let find = groups.iter_mut().find(|(_, group)| group.name == name);
@@ -697,7 +709,7 @@ async fn connection(
 
 struct State {
     update_buffer: usize,
-    access_tokens: HashSet<AccessToken>,
+    access_tokens: HashMap<AccessToken, Groups>,
     groups: RwLock<Slab<Group>>,
     sender: Sender<GlobalUpdate>,
 }

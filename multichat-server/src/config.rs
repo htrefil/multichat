@@ -1,5 +1,5 @@
 use multichat_proto::AccessToken;
-use serde::de::{Error, Visitor};
+use serde::de::{Error, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
 use std::fmt::{self, Formatter};
@@ -21,7 +21,7 @@ pub struct Config {
     pub ping_interval: Option<Duration>,
     #[serde(default, deserialize_with = "deserialize_duration")]
     pub ping_timeout: Option<Duration>,
-    pub access_tokens: HashSet<AccessToken>,
+    pub clients: Vec<Client>,
 }
 
 #[derive(Deserialize)]
@@ -29,6 +29,69 @@ pub struct Config {
 pub struct Tls {
     pub certificate: PathBuf,
     pub key: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Client {
+    pub access_token: AccessToken,
+    pub groups: Groups,
+}
+
+pub enum Groups {
+    All,
+    Some(HashSet<String>),
+}
+
+impl Groups {
+    pub fn contains(&self, group: &str) -> bool {
+        match self {
+            Groups::All => true,
+            Groups::Some(groups) => groups.contains(group),
+        }
+    }
+}
+
+impl<'a> Deserialize<'a> for Groups {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'a>,
+    {
+        struct GroupsVisitor;
+
+        impl<'a> Visitor<'a> for GroupsVisitor {
+            type Value = Groups;
+
+            fn expecting(&self, formatter: &mut Formatter) -> fmt::Result {
+                formatter.write_str("a group or a list of groups")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                if value != "*" {
+                    return Err(E::custom("expected '*' to allow all or a list of groups"));
+                }
+
+                Ok(Groups::All)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'a>,
+            {
+                let mut groups = HashSet::new();
+                while let Some(group) = seq.next_element()? {
+                    groups.insert(group);
+                }
+
+                Ok(Groups::Some(groups))
+            }
+        }
+
+        deserializer.deserialize_any(GroupsVisitor)
+    }
 }
 
 fn deserialize_size<'de, D>(deserializer: D) -> Result<usize, D::Error>

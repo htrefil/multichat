@@ -1,11 +1,17 @@
 listen = "0.0.0.0:8585"
 update-buffer = 512
-access-tokens = [
-    "52f0395327987f07f805c3ac54fe38ac123303fcdb62a61fdfc9b8082195486c",
-    "07e6a978bbed823e85e51b9702a73b5e1fe5599b01628a7cc076fadc737d071f"
-]
 max-size = "512 MiB"
 # How often will the server check if a client is still connected. Default is 30 seconds.
 # ping-interval = "30s"
 # How long will the server wait for a client to respond to a ping. Default is 1 seconds.
 # ping-timeout = "10s"
+
+[[clients]]
+access-token = "52f0395327987f07f805c3ac54fe38ac123303fcdb62a61fdfc9b8082195486c"
+# Allow this client to access all groups.
+groups = "*" 
+
+[[clients]]
+access-token = "07e6a978bbed823e85e51b9702a73b5e1fe5599b01628a7cc076fadc737d071f"
+# Allow this client to access only the "foo" and "bar" groups.
+groups = ["foo", "bar"]

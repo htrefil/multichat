@@ -5,6 +5,7 @@ mod tls;
 use clap::Parser;
 use config::Config;
 use multichat_proto::Config as ProtoConfig;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use tls::DefaultAcceptor;
@@ -50,6 +51,18 @@ async fn main() -> ExitCode {
         }
     };
 
+    let mut access_tokens = HashMap::new();
+    for client in config.clients {
+        let exists = access_tokens
+            .insert(client.access_token, client.groups)
+            .is_some();
+
+        if exists {
+            tracing::error!("Duplicate access token: {}", client.access_token);
+            return ExitCode::FAILURE;
+        }
+    }
+
     let mut proto_config = ProtoConfig::default();
     proto_config.max_size(config.max_size);
 
@@ -67,7 +80,7 @@ async fn main() -> ExitCode {
                 config.listen,
                 acceptor,
                 config.update_buffer,
-                config.access_tokens,
+                access_tokens,
                 proto_config,
                 config.ping_interval,
                 config.ping_timeout,
@@ -79,7 +92,7 @@ async fn main() -> ExitCode {
                 config.listen,
                 DefaultAcceptor,
                 config.update_buffer,
-                config.access_tokens,
+                access_tokens,
                 proto_config,
                 config.ping_interval,
                 config.ping_timeout,
