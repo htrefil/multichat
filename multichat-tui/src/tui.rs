@@ -438,6 +438,34 @@ pub async fn run(screen: &mut Screen) -> Result<(), Error> {
                             state.client.ignore_attachment(attachment.id).await?;
                         }
                     }
+                    UpdateKind::StartTyping { uid } => {
+                        let group = state.groups.get(&update.gid).unwrap();
+                        let user = &group.users.get(&uid).unwrap().name;
+
+                        screen.log(
+                            Level::Info,
+                            format!(
+                                "[{}] {} ({}): typing",
+                                group.name.term_safe(),
+                                user.term_safe().bold(),
+                                uid
+                            ),
+                        );
+                    }
+                    UpdateKind::StopTyping { uid } => {
+                        let group = state.groups.get(&update.gid).unwrap();
+                        let user = &group.users.get(&uid).unwrap().name;
+
+                        screen.log(
+                            Level::Info,
+                            format!(
+                                "[{}] {} ({}): stopped typing",
+                                group.name.term_safe(),
+                                user.term_safe().bold(),
+                                uid
+                            ),
+                        );
+                    }
                 }
             }
         }

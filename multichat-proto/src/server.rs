@@ -24,6 +24,10 @@ pub enum ServerMessage<'a> {
         message: Cow<'a, str>,
         attachments: Vec<Attachment>,
     },
+    /// A user is typing.
+    StartTyping { gid: u32, uid: u32 },
+    /// A user has stopped typing.
+    TypingStop { gid: u32, uid: u32 },
     /// A user was renamed.
     Rename {
         gid: u32,

@@ -7,12 +7,13 @@ use std::{io, mem, slice};
 use teloxide::payloads::SendMessageSetters;
 use teloxide::prelude::Requester;
 use teloxide::types::{
-    ChatId, InputFile, InputMedia, InputMediaAudio, InputMediaDocument, InputMediaPhoto,
-    InputMediaVideo, ParseMode, UserId,
+    ChatAction, ChatId, InputFile, InputMedia, InputMediaAudio, InputMediaDocument,
+    InputMediaPhoto, InputMediaVideo, ParseMode, UserId,
 };
 use teloxide::{Bot, RequestError};
 use thiserror::Error;
 use tokio::sync::mpsc::Receiver;
+use tokio::time;
 
 use crate::markdown_safe::MarkdownSafeExt;
 use crate::telegram::{Event as TelegramEvent, EventKind};
@@ -117,19 +118,55 @@ pub async fn run(
                     }
                 }
             },
+            Event::Multichat(Update {
+                kind: UpdateKind::InitGroup { .. } | UpdateKind::DestroyGroup { .. },
+                ..
+            }) => continue,
             Event::Multichat(update) => {
-                let (message, silent) = match update.kind {
+                let chat_ids = group_to_chat.get(&update.gid).unwrap();
+
+                match update.kind {
                     UpdateKind::InitUser { uid, name } => {
                         let owned = owned.remove(&(update.gid, uid));
-                        let user = multichat_users
-                            .entry((update.gid, uid))
-                            .or_insert(MultichatUser { name, owned });
+                        let user =
+                            multichat_users
+                                .entry((update.gid, uid))
+                                .or_insert(MultichatUser {
+                                    name,
+                                    typing: false,
+                                    owned,
+                                });
 
                         if user.owned {
                             continue;
                         }
 
-                        (format!("*{}*: joined", user.name.markdown_safe()), true)
+                        let message = format!("*{}*: joined", user.name.markdown_safe());
+
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_message(*chat_id, &message)
+                                    .parse_mode(ParseMode::MarkdownV2)
+                                    .disable_notification(true)
+                                    .await
+                            })
+                            .await?;
+                        }
+
+                        let typing = multichat_users
+                            .iter()
+                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
+
+                        if !typing {
+                            continue;
+                        }
+
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                            })
+                            .await?;
+                        }
                     }
                     UpdateKind::DestroyUser { uid } => {
                         let user = multichat_users.remove(&(update.gid, uid)).unwrap();
@@ -137,7 +174,32 @@ pub async fn run(
                             continue;
                         }
 
-                        (format!("*{}*: left", user.name.markdown_safe()), true)
+                        let message = format!("*{}*: left", user.name.markdown_safe());
+
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_message(*chat_id, &message)
+                                    .parse_mode(ParseMode::MarkdownV2)
+                                    .disable_notification(true)
+                                    .await
+                            })
+                            .await?;
+                        }
+
+                        let typing = multichat_users
+                            .iter()
+                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
+
+                        if !typing {
+                            continue;
+                        }
+
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                            })
+                            .await?;
+                        }
                     }
                     UpdateKind::Message { uid, message } => {
                         let user = multichat_users.get(&(update.gid, uid)).unwrap();
@@ -164,8 +226,7 @@ pub async fn run(
                                     continue;
                                 }
 
-                                let data = client.download_attachment(attachment.id).await?;
-                                attachments.push(data);
+                                attachments.push(client.download_attachment(attachment.id).await?);
                             }
 
                             // Split the attachments into chunks of 10, which is the maximum allowed by Telegram.
@@ -184,8 +245,6 @@ pub async fn run(
 
                                 if media_group.len() == 10 || i == len - 1 {
                                     for chat_id in chat_ids {
-                                        tracing::debug!(%chat_id, "Sending media group to Telegram");
-
                                         rate_limit(|| async {
                                             bot.send_media_group(*chat_id, media_group.clone())
                                                 .await
@@ -196,11 +255,31 @@ pub async fn run(
                                     media_group.clear();
                                 }
                             }
+                        } else {
+                            for chat_id in chat_ids {
+                                rate_limit(|| async {
+                                    bot.send_message(*chat_id, &text)
+                                        .parse_mode(ParseMode::MarkdownV2)
+                                        .await
+                                })
+                                .await?;
+                            }
+                        }
 
+                        let typing = multichat_users
+                            .iter()
+                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
+
+                        if !typing {
                             continue;
                         }
 
-                        (text, false)
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                            })
+                            .await?;
+                        }
                     }
                     UpdateKind::Rename {
                         uid,
@@ -213,29 +292,75 @@ pub async fn run(
                             continue;
                         }
 
-                        (
-                            format!(
-                                "*{}*: renamed to *{}*",
-                                old_name.markdown_safe(),
-                                new_name.markdown_safe()
-                            ),
-                            true,
-                        )
+                        let message = format!(
+                            "*{}*: renamed to *{}*",
+                            old_name.markdown_safe(),
+                            new_name.markdown_safe()
+                        );
+
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_message(*chat_id, &message)
+                                    .parse_mode(ParseMode::MarkdownV2)
+                                    .disable_notification(true)
+                                    .await
+                            })
+                            .await?;
+                        }
+
+                        let typing = multichat_users
+                            .iter()
+                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
+
+                        if !typing {
+                            continue;
+                        }
+
+                        for chat_id in chat_ids {
+                            rate_limit(|| async {
+                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                            })
+                            .await?;
+                        }
                     }
-                    UpdateKind::InitGroup { .. } | UpdateKind::DestroyGroup { .. } => continue,
-                };
+                    UpdateKind::StartTyping { uid } => {
+                        let user = multichat_users.get_mut(&(update.gid, uid)).unwrap();
+                        user.typing = true;
 
-                let chat_ids = group_to_chat.get(&update.gid).unwrap();
-                for chat_id in chat_ids {
-                    tracing::debug!(%chat_id, msg = ?message, "Sending message to Telegram");
+                        for chat_id in &group_to_chat[&update.gid] {
+                            rate_limit(|| async {
+                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                            })
+                            .await?;
+                        }
 
-                    rate_limit(|| async {
-                        bot.send_message(*chat_id, &message)
-                            .parse_mode(ParseMode::MarkdownV2)
-                            .disable_notification(silent)
-                            .await
-                    })
-                    .await?;
+                        continue;
+                    }
+                    UpdateKind::StopTyping { uid } => {
+                        let user = multichat_users.get_mut(&(update.gid, uid)).unwrap();
+                        user.typing = false;
+
+                        let typing = multichat_users
+                            .iter()
+                            .any(|((ugid, _), user)| *ugid == update.gid && user.typing);
+
+                        if typing {
+                            continue;
+                        }
+
+                        for chat_id in &group_to_chat[&update.gid] {
+                            rate_limit(|| async {
+                                bot.send_chat_action(*chat_id, ChatAction::Typing).await
+                            })
+                            .await?;
+                        }
+
+                        continue;
+                    }
+                    UpdateKind::InitGroup { .. } | UpdateKind::DestroyGroup { .. } => {
+                        // Handled above.
+                        unreachable!()
+                    }
                 }
             }
         }
@@ -289,8 +414,6 @@ fn into_input_media(data: Vec<u8>, caption: Option<String>) -> InputMedia {
 async fn rate_limit<T, C: Fn() -> F, F: Future<Output = Result<T, RequestError>>>(
     c: C,
 ) -> Result<T, RequestError> {
-    use tokio::time;
-
     loop {
         match c().await {
             Ok(result) => return Ok(result),
@@ -319,4 +442,5 @@ struct TelegramUser {
 struct MultichatUser {
     name: String,
     owned: bool,
+    typing: bool,
 }

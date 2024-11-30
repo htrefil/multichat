@@ -214,6 +214,35 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Client<T> {
         Ok(())
     }
 
+    /// Sends a typing start notification to a group as a user.
+    ///
+    /// Calling this method multiple times is not allowed and will result in client disconnection by server.
+    pub async fn start_typing(&mut self, gid: u32, uid: u32) -> Result<(), Error> {
+        self.config
+            .write(
+                &mut *self.stream_write.lock().await,
+                &ClientMessage::StartTyping { gid, uid },
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Sends a typing stop notification to a group as a user.
+    ///
+    /// This method must be called after [start_typing](Client::start_typing).
+    /// Not doing so is considered an error and will result in client disconnection by server.
+    pub async fn stop_typing(&mut self, gid: u32, uid: u32) -> Result<(), Error> {
+        self.config
+            .write(
+                &mut *self.stream_write.lock().await,
+                &ClientMessage::TypingStop { gid, uid },
+            )
+            .await?;
+
+        Ok(())
+    }
+
     /// Downloads an attachment.
     ///
     /// Specifying a nonexistent attachment ID is considered an error and will result in client disconnection by server.
@@ -314,6 +343,11 @@ pub enum UpdateKind {
     Rename { uid: u32, name: String },
     /// A user sent a message.
     Message { uid: u32, message: Message },
+    /// A user started typing.
+    StartTyping { uid: u32 },
+    /// A user stopped typing.
+    /// This update will be sent only after sending a `StartTyping` update first.
+    StopTyping { uid: u32 },
 }
 
 /// A message from a user.
@@ -389,6 +423,14 @@ fn translate_message(message: ServerMessage<'static>) -> Result<Update, Reply> {
                     attachments,
                 },
             },
+        }),
+        ServerMessage::StartTyping { gid, uid } => Ok(Update {
+            gid,
+            kind: UpdateKind::StartTyping { uid },
+        }),
+        ServerMessage::TypingStop { gid, uid } => Ok(Update {
+            gid,
+            kind: UpdateKind::StopTyping { uid },
         }),
         ServerMessage::ConfirmUser { uid } => Err(Reply::ConfirmClient(uid)),
         ServerMessage::ConfirmGroup { gid } => Err(Reply::ConfirmGroup(gid)),

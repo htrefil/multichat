@@ -28,6 +28,10 @@ pub enum ClientMessage<'a, 'b> {
         message: Cow<'b, str>,
         attachments: Cow<'b, [Cow<'a, [u8]>]>,
     },
+    /// A user is typing.
+    StartTyping { gid: u32, uid: u32 },
+    /// A user has stopped typing.
+    TypingStop { gid: u32, uid: u32 },
     /// Download an attachment.
     DownloadAttachment { id: u32 },
     /// Ignore an attachment.

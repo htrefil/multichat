@@ -314,12 +314,12 @@ async fn connection(
                             let users = group
                                 .users
                                 .iter()
-                                .map(|(uid, user)| (uid, user.name.clone()))
+                                .map(|(uid, user)| (uid, user.name.clone(), user.typing))
                                 .collect::<Vec<_>>();
 
                             drop(groups);
 
-                            for (uid, name) in users {
+                            for (uid, name, typing) in users {
                                 config
                                     .write(
                                         &mut stream_write,
@@ -330,6 +330,18 @@ async fn connection(
                                         },
                                     )
                                     .await?;
+
+                                if typing {
+                                    config
+                                        .write(
+                                            &mut stream_write,
+                                            &ServerMessage::StartTyping {
+                                                gid,
+                                                uid: uid.try_into().unwrap(),
+                                            },
+                                        )
+                                        .await?;
+                                }
                             }
                         }
 
@@ -399,6 +411,7 @@ async fn connection(
                             .users
                             .insert(User {
                                 name: name.clone().into(),
+                                typing: false,
                                 owner: addr,
                             })
                             .try_into()
@@ -550,6 +563,100 @@ async fn connection(
 
                         tracing::debug!(%gid, %uid, ?name, "Rename");
                     }
+                    ClientMessage::StartTyping { gid, uid } => {
+                        let mut groups = state.groups.write().await;
+
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| groups.get_mut(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to start typing in a nonexistent group",
+                                )
+                            })?;
+
+                        let err = || {
+                            Error::new(
+                                ErrorKind::Other,
+                                "Attempted to start typing as a nonexistent user",
+                            )
+                        };
+
+                        let uid = uid.try_into().map_err(|_| err())?;
+                        let user = group.users.get_mut(uid).ok_or_else(err)?;
+
+                        if user.owner != addr {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to start typing as a non owned user",
+                            ));
+                        }
+
+                        if user.typing {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to start typing while already typing",
+                            ));
+                        }
+
+                        user.typing = true;
+
+                        let _ = group.sender.send(GroupUpdate {
+                            uid: uid.try_into().unwrap(),
+                            kind: GroupUpdateKind::StartTyping,
+                        });
+
+                        tracing::debug!(%gid, %uid, "Stop typing");
+                    }
+                    ClientMessage::TypingStop { gid, uid } => {
+                        let mut groups = state.groups.write().await;
+
+                        let group = gid
+                            .try_into()
+                            .ok()
+                            .and_then(|gid: usize| groups.get_mut(gid))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorKind::Other,
+                                    "Attempted to stop typing in a nonexistent group",
+                                )
+                            })?;
+
+                        let err = || {
+                            Error::new(
+                                ErrorKind::Other,
+                                "Attempted to stop typing as a nonexistent user",
+                            )
+                        };
+
+                        let uid = uid.try_into().map_err(|_| err())?;
+                        let user = group.users.get_mut(uid).ok_or_else(err)?;
+
+                        if user.owner != addr {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to stop typing as a non owned user",
+                            ));
+                        }
+
+                        if !user.typing {
+                            return Err(Error::new(
+                                ErrorKind::Other,
+                                "Attempted to stop typing while not typing",
+                            ));
+                        }
+
+                        user.typing = false;
+
+                        let _ = group.sender.send(GroupUpdate {
+                            uid: uid.try_into().unwrap(),
+                            kind: GroupUpdateKind::TypingStop,
+                        });
+
+                        tracing::debug!(%gid, %uid, "Stop typing");
+                    }
                     ClientMessage::DownloadAttachment { id } => {
                         let attachment = id
                             .try_into()
@@ -629,12 +736,12 @@ async fn connection(
                 let users = groups[update.gid.try_into().unwrap()]
                     .users
                     .iter()
-                    .map(|(uid, user)| (uid, user.name.clone()))
+                    .map(|(uid, user)| (uid, user.name.clone(), user.typing))
                     .collect::<Vec<_>>();
 
                 drop(groups);
 
-                for (uid, name) in users {
+                for (uid, name, typing) in users {
                     config
                         .write(
                             &mut stream_write,
@@ -645,6 +752,18 @@ async fn connection(
                             },
                         )
                         .await?;
+
+                    if typing {
+                        config
+                            .write(
+                                &mut stream_write,
+                                &ServerMessage::StartTyping {
+                                    gid: update.gid,
+                                    uid: uid.try_into().unwrap(),
+                                },
+                            )
+                            .await?;
+                    }
                 }
             }
             LocalUpdate::Group((gid, update)) => {
@@ -687,6 +806,14 @@ async fn connection(
                             attachments: message_attachments,
                         }
                     }
+                    GroupUpdateKind::StartTyping => ServerMessage::StartTyping {
+                        gid,
+                        uid: update.uid,
+                    },
+                    GroupUpdateKind::TypingStop => ServerMessage::TypingStop {
+                        gid,
+                        uid: update.uid,
+                    },
                 };
 
                 config.write(&mut stream_write, &message).await?;
@@ -739,6 +866,7 @@ impl Group {
 
 struct User {
     name: String,
+    typing: bool,
     // Owning connection.
     owner: SocketAddr,
 }
@@ -780,6 +908,8 @@ enum GroupUpdateKind {
         message: String,
         attachments: Vec<Arc<Vec<u8>>>,
     },
+    StartTyping,
+    TypingStop,
     Rename {
         name: String,
     },
